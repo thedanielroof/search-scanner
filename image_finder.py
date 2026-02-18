@@ -88,7 +88,7 @@ _APP_PASSWORD_HASH = hashlib.sha256((_APP_SALT + '1146').encode()).hexdigest()
 app.config['SESSION_COOKIE_HTTPONLY'] = True    # JS can't access session cookie
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'  # CSRF protection for cookies
 app.config['PERMANENT_SESSION_LIFETIME'] = 3600  # 1 hour session timeout
-app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB max upload size
+app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024  # 500MB max upload size
 
 # Rate limiting / brute force protection
 _login_attempts = defaultdict(list)  # IP -> [timestamps]
@@ -537,6 +537,7 @@ class AudioScanner:
         pct_base/pct_range allow embedding within a larger multi-file progress bar."""
         model = _get_whisper_model()
         prefix = f'[{file_label}] ' if file_label else ''
+        search_terms = [t.strip() for t in self.search_text.split() if t.strip()]
 
         def _update(phase, detail, pct):
             if not scan_id:
@@ -546,6 +547,14 @@ class AudioScanner:
                     _audio_scan_progress[scan_id].update(
                         {'phase': phase, 'phase_detail': prefix + detail,
                          'percent': int(pct_base + pct_range * pct / 100)})
+
+        def _push_partial(item):
+            """Push a partial result for live streaming to the frontend."""
+            if not scan_id:
+                return
+            with _audio_scan_lock:
+                if scan_id in _audio_scan_progress:
+                    _audio_scan_progress[scan_id]['partial_results'].append(item)
 
         _update('transcribing', 'Processing audio...', 5)
 
@@ -564,6 +573,7 @@ class AudioScanner:
 
         full_transcript = []
         segment_list = []
+        matches = []
         for seg in segments_gen:
             segment_list.append(seg)
             seg_data = {
@@ -575,27 +585,39 @@ class AudioScanner:
             full_transcript.append(seg_data)
             _update('transcribing', f'Transcribed {len(segment_list)} segments...', min(80, 5 + len(segment_list) * 2))
 
-        _update('searching', 'Searching transcript for keywords...', 85)
+            # Stream each transcript segment live
+            _push_partial({
+                'kind': 'segment',
+                'start': seg_data['start'],
+                'end': seg_data['end'],
+                'text': seg_data['text'],
+            })
 
-        search_terms = [t.strip() for t in self.search_text.split() if t.strip()]
-        matches = []
-
-        for seg in full_transcript:
-            seg_lower = seg['text'].lower()
-            matched = [t for t in search_terms if t in seg_lower]
-            if matched:
-                highlighted = seg['text']
-                for term in matched:
-                    pattern = re.compile(re.escape(term), re.IGNORECASE)
-                    highlighted = pattern.sub(lambda m: f'<mark>{m.group()}</mark>', highlighted)
-                matches.append({
-                    'segment_id': seg['id'],
-                    'start': seg['start'],
-                    'end': seg['end'],
-                    'text': seg['text'],
-                    'highlighted_text': highlighted,
-                    'matched_terms': matched,
-                })
+            # Check for keyword matches in real-time
+            if search_terms:
+                seg_lower = seg_data['text'].lower()
+                matched = [t for t in search_terms if t in seg_lower]
+                if matched:
+                    highlighted = seg_data['text']
+                    for term in matched:
+                        pattern = re.compile(re.escape(term), re.IGNORECASE)
+                        highlighted = pattern.sub(lambda m: f'<mark>{m.group()}</mark>', highlighted)
+                    match_item = {
+                        'segment_id': seg_data['id'],
+                        'start': seg_data['start'],
+                        'end': seg_data['end'],
+                        'text': seg_data['text'],
+                        'highlighted_text': highlighted,
+                        'matched_terms': matched,
+                    }
+                    matches.append(match_item)
+                    _push_partial({
+                        'kind': 'match',
+                        'start': match_item['start'],
+                        'end': match_item['end'],
+                        'highlighted_text': highlighted,
+                        'matched_terms': matched,
+                    })
 
         _update('done', 'Complete', 100)
 
@@ -1802,11 +1824,42 @@ async function startAudioFolderScan() {
     }
     const scanId = startData.scan_id;
 
+    // Live results container for streaming file results
+    results.innerHTML = '<div id="audioLiveFiles"></div>';
+
     const data = await new Promise((resolve, reject) => {
       const poll = async () => {
         try {
           const resp = await fetch('/audio/scan/progress?id=' + scanId);
           const prog = await resp.json();
+          // Render new partial results live
+          if (prog.new_matches && prog.new_matches.length > 0) {
+            const liveBox = document.getElementById('audioLiveFiles');
+            prog.new_matches.forEach(m => {
+              if (m.kind === 'file_done' && liveBox) {
+                const div = document.createElement('div');
+                div.style.cssText = 'margin-bottom:12px;border:1px solid #0a3e1a;border-radius:6px;padding:10px;background:rgba(0,10,0,0.3);animation:fadeIn 0.3s ease-in;';
+                const badge = m.is_video ? '<span class="audio-badge" style="background:#e54cff;">VIDEO</span>' : '<span class="audio-badge">AUDIO</span>';
+                const dur = m.audio_duration ? fmtTime(m.audio_duration) : '';
+                let inner = '<div style="font-size:13px;color:#00ff41;margin-bottom:6px;">' + badge + ' <strong>' + escapeHtml(m.filename) + '</strong>';
+                inner += ' <span style="color:#0a5e2a;font-size:11px;">(' + (dur ? dur + ' / ' : '') + m.matches_count + ' match' + (m.matches_count !== 1 ? 'es' : '') + ')</span>';
+                inner += ' <button style="float:right;background:none;border:1px solid #0a5e2a;color:#0a8e3a;border-radius:3px;cursor:pointer;font-family:inherit;font-size:11px;padding:2px 8px;" onclick="reveal(\'' + escapeJs(m.file) + '\')">Reveal</button>';
+                inner += '</div>';
+                if (m.matches && m.matches.length > 0) {
+                  m.matches.forEach(mt => {
+                    inner += '<div class="transcript-segment" style="margin-bottom:4px;">';
+                    inner += '<div class="seg-time">' + fmtTime(mt.start) + ' — ' + fmtTime(mt.end) + '</div>';
+                    inner += '<div class="seg-text">' + mt.highlighted_text + '</div>';
+                    inner += '<div class="matched-terms">Matched: ' + mt.matched_terms.map(t => escapeHtml(t)).join(', ') + '</div></div>';
+                  });
+                }
+                div.innerHTML = inner;
+                liveBox.appendChild(div);
+              } else if (m.kind === 'match' && liveBox) {
+                // Individual match from current file (already handled by file_done, but show immediately)
+              }
+            });
+          }
           if (prog.done) {
             if (prog.error) { reject(new Error(prog.error)); return; }
             document.getElementById('audioProgressFill').style.width = '100%';
@@ -1814,7 +1867,7 @@ async function startAudioFolderScan() {
           }
           document.getElementById('audioProgressFill').style.width = prog.percent + '%';
           document.getElementById('audioStatusText').textContent = prog.phase_detail || 'Processing...';
-          setTimeout(poll, 500);
+          setTimeout(poll, 400);
         } catch (err) { reject(err); }
       };
       poll();
@@ -1937,11 +1990,36 @@ async function startAudioScan() {
     const scanId = startData.scan_id;
     document.getElementById('textStatusText').textContent = 'Processing audio...';
 
+    // Live results container for streaming
+    results.innerHTML = '<div id="textLiveMatches"></div><div id="textLiveSegments" style="margin-top:10px;"></div>';
+
     const data = await new Promise((resolve, reject) => {
       const poll = async () => {
         try {
           const resp = await fetch('/audio/scan/progress?id=' + scanId);
           const prog = await resp.json();
+          // Render new partial results live
+          if (prog.new_matches && prog.new_matches.length > 0) {
+            const matchBox = document.getElementById('textLiveMatches');
+            const segBox = document.getElementById('textLiveSegments');
+            prog.new_matches.forEach(m => {
+              if (m.kind === 'match') {
+                const div = document.createElement('div');
+                div.className = 'transcript-segment';
+                div.style.animation = 'fadeIn 0.3s ease-in';
+                div.innerHTML = '<div class="seg-time"><span class="audio-badge">MATCH</span> ' +
+                  fmtTime(m.start) + ' — ' + fmtTime(m.end) + '</div>' +
+                  '<div class="seg-text">' + m.highlighted_text + '</div>' +
+                  '<div class="matched-terms">Matched: ' + m.matched_terms.map(t => escapeHtml(t)).join(', ') + '</div>';
+                if (matchBox) matchBox.appendChild(div);
+              } else if (m.kind === 'segment') {
+                const div = document.createElement('div');
+                div.style.cssText = 'margin-bottom:4px;animation:fadeIn 0.2s ease-in;font-size:12px;color:#0a8e3a;';
+                div.innerHTML = '<span style="color:#7fff00;font-size:10px;">[' + fmtTime(m.start) + ']</span> ' + escapeHtml(m.text);
+                if (segBox) segBox.appendChild(div);
+              }
+            });
+          }
           if (prog.done) {
             if (prog.error) { reject(new Error(prog.error)); return; }
             document.getElementById('textProgressFill').style.width = '100%';
@@ -1949,7 +2027,7 @@ async function startAudioScan() {
           }
           document.getElementById('textProgressFill').style.width = prog.percent + '%';
           document.getElementById('textStatusText').textContent = prog.phase_detail || 'Processing...';
-          setTimeout(poll, 500);
+          setTimeout(poll, 400);
         } catch (err) { reject(err); }
       };
       poll();
@@ -2098,11 +2176,35 @@ async function startTranscribe() {
     const scanId = startData.scan_id;
     document.getElementById('transcribeStatusText').textContent = 'Transcribing...';
 
+    // Live transcript container for streaming
+    results.innerHTML = '<div id="transcribeLiveMatches"></div><div id="transcribeLiveSegments" style="margin-top:10px;border:1px solid #0a3e1a;border-radius:6px;padding:12px;background:rgba(0,10,0,0.2);"></div>';
+
     const data = await new Promise((resolve, reject) => {
       const poll = async () => {
         try {
           const resp = await fetch('/audio/scan/progress?id=' + scanId);
           const prog = await resp.json();
+          // Render new partial results live
+          if (prog.new_matches && prog.new_matches.length > 0) {
+            const matchBox = document.getElementById('transcribeLiveMatches');
+            const segBox = document.getElementById('transcribeLiveSegments');
+            prog.new_matches.forEach(m => {
+              if (m.kind === 'match' && matchBox) {
+                const div = document.createElement('div');
+                div.className = 'transcript-segment';
+                div.style.animation = 'fadeIn 0.3s ease-in';
+                div.innerHTML = (showTimestamps ? '<div class="seg-time">' + fmtTime(m.start) + ' — ' + fmtTime(m.end) + '</div>' : '') +
+                  '<div class="seg-text">' + m.highlighted_text + '</div>';
+                matchBox.appendChild(div);
+              } else if (m.kind === 'segment' && segBox) {
+                const div = document.createElement('div');
+                div.style.cssText = 'margin-bottom:6px;line-height:1.5;animation:fadeIn 0.2s ease-in;';
+                div.innerHTML = (showTimestamps ? '<span style="color:#7fff00;font-size:11px;margin-right:6px;">[' + fmtTime(m.start) + ']</span> ' : '') +
+                  escapeHtml(m.text);
+                segBox.appendChild(div);
+              }
+            });
+          }
           if (prog.done) {
             if (prog.error) { reject(new Error(prog.error)); return; }
             document.getElementById('transcribeProgressFill').style.width = '100%';
@@ -2110,7 +2212,7 @@ async function startTranscribe() {
           }
           document.getElementById('transcribeProgressFill').style.width = prog.percent + '%';
           document.getElementById('transcribeStatusText').textContent = prog.phase_detail || 'Processing...';
-          setTimeout(poll, 500);
+          setTimeout(poll, 400);
         } catch (err) { reject(err); }
       };
       poll();
@@ -2126,6 +2228,10 @@ async function startTranscribe() {
   updateTranscribeBtn();
 }
 
+// Store last transcription data for download
+let lastTranscriptData = null;
+let lastTranscriptTimestamps = true;
+
 function renderTranscribeResults(data, searchText, showTimestamps) {
   const results = document.getElementById('transcribeResults');
   const matches = data.matches || [];
@@ -2134,12 +2240,23 @@ function renderTranscribeResults(data, searchText, showTimestamps) {
   const elapsed = data.elapsed || '?';
   const totalSegs = data.total_segments || 0;
 
+  // Store for download
+  lastTranscriptData = data;
+  lastTranscriptTimestamps = showTimestamps;
+
   let html = '<div class="results-header" style="margin-bottom:15px;padding:10px;border:1px solid #0a3e1a;border-radius:4px;color:#0a8e3a;font-size:13px;">';
   html += '> Transcribed <span style="color:#00ff41;">' + totalSegs + '</span> segment(s)';
   html += ' &bull; ' + elapsed + 's &bull; ' + lang + ' &bull; Duration: ' + dur;
   if (searchText && matches.length > 0) {
     html += ' &bull; <span style="color:#00ff41;">' + matches.length + '</span> keyword match(es)';
   }
+  html += '</div>';
+
+  // Download buttons
+  html += '<div style="margin-bottom:15px;display:flex;gap:8px;flex-wrap:wrap;">';
+  html += '<button class="scan-btn" style="font-size:11px;padding:6px 14px;" onclick="downloadTranscript(\'txt\')">[ Download .txt ]</button>';
+  html += '<button class="scan-btn" style="font-size:11px;padding:6px 14px;" onclick="downloadTranscript(\'srt\')">[ Download .srt ]</button>';
+  html += '<button class="scan-btn" style="font-size:11px;padding:6px 14px;" onclick="downloadTranscript(\'vtt\')">[ Download .vtt ]</button>';
   html += '</div>';
 
   // Show keyword matches first if any
@@ -2172,6 +2289,68 @@ function renderTranscribeResults(data, searchText, showTimestamps) {
   }
 
   results.innerHTML = html;
+}
+
+function fmtSrtTime(seconds) {
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = Math.floor(seconds % 60);
+  const ms = Math.round((seconds % 1) * 1000);
+  return String(h).padStart(2,'0') + ':' + String(m).padStart(2,'0') + ':' + String(s).padStart(2,'0') + ',' + String(ms).padStart(3,'0');
+}
+
+function fmtVttTime(seconds) {
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = Math.floor(seconds % 60);
+  const ms = Math.round((seconds % 1) * 1000);
+  return String(h).padStart(2,'0') + ':' + String(m).padStart(2,'0') + ':' + String(s).padStart(2,'0') + '.' + String(ms).padStart(3,'0');
+}
+
+function downloadTranscript(format) {
+  if (!lastTranscriptData || !lastTranscriptData.full_transcript) return;
+  const segs = lastTranscriptData.full_transcript;
+  let content = '';
+  let filename = 'transcript';
+  let mime = 'text/plain';
+
+  if (format === 'txt') {
+    for (const seg of segs) {
+      if (lastTranscriptTimestamps) {
+        content += '[' + fmtTime(seg.start) + '] ' + seg.text + '\n';
+      } else {
+        content += seg.text + '\n';
+      }
+    }
+    filename += '.txt';
+  } else if (format === 'srt') {
+    segs.forEach((seg, i) => {
+      content += (i + 1) + '\n';
+      content += fmtSrtTime(seg.start) + ' --> ' + fmtSrtTime(seg.end) + '\n';
+      content += seg.text + '\n\n';
+    });
+    filename += '.srt';
+    mime = 'text/srt';
+  } else if (format === 'vtt') {
+    content = 'WEBVTT\n\n';
+    segs.forEach((seg, i) => {
+      content += (i + 1) + '\n';
+      content += fmtVttTime(seg.start) + ' --> ' + fmtVttTime(seg.end) + '\n';
+      content += seg.text + '\n\n';
+    });
+    filename += '.vtt';
+    mime = 'text/vtt';
+  }
+
+  const blob = new Blob([content], {type: mime});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
 }
 
 // ==================== SCAN HISTORY (text/audio/transcribe) ====================
@@ -2692,6 +2871,8 @@ def audio_scan():
             'phase': 'starting', 'phase_detail': 'Initializing...',
             'percent': 0, 'done': False, 'error': None, 'result': None,
             'start_time': time.time(),
+            'partial_results': [],
+            'partial_sent': 0,
         }
 
     def run_audio_scan():
@@ -2752,7 +2933,7 @@ def audio_scan():
 
 @app.route('/audio/scan/progress')
 def audio_scan_progress():
-    """Poll audio scan progress."""
+    """Poll audio scan progress. Returns new_matches for live streaming."""
     scan_id = request.args.get('id', '')
     with _audio_scan_lock:
         prog = _audio_scan_progress.get(scan_id)
@@ -2764,9 +2945,18 @@ def audio_scan_progress():
         if result.get('error'):
             return jsonify(error=result['error'], done=True), 500
         return jsonify(done=True, **result['result'])
+    # Send only NEW partial results since last poll
+    new_results = []
+    with _audio_scan_lock:
+        sent = prog.get('partial_sent', 0)
+        all_partial = prog.get('partial_results', [])
+        if sent < len(all_partial):
+            new_results = all_partial[sent:]
+            _audio_scan_progress[scan_id]['partial_sent'] = len(all_partial)
     return jsonify(
         done=False, phase=prog['phase'],
         phase_detail=prog['phase_detail'], percent=prog['percent'],
+        new_matches=new_results,
     )
 
 
@@ -2790,6 +2980,8 @@ def audio_folder_scan():
             'phase': 'collecting', 'phase_detail': 'Scanning folder for audio/video files...',
             'percent': 0, 'done': False, 'error': None, 'result': None,
             'start_time': time.time(),
+            'partial_results': [],
+            'partial_sent': 0,
         }
 
     def run_folder_scan():
@@ -2856,6 +3048,20 @@ def audio_folder_scan():
                     result['is_video'] = is_video
                     total_matches += len(result['matches'])
                     all_results.append(result)
+                    # Push per-file completion for live folder scan display
+                    with _audio_scan_lock:
+                        if scan_id in _audio_scan_progress:
+                            _audio_scan_progress[scan_id]['partial_results'].append({
+                                'kind': 'file_done',
+                                'filename': fname,
+                                'file': fpath,
+                                'is_video': is_video,
+                                'matches_count': len(result['matches']),
+                                'matches': result['matches'][:10],  # first 10 for display
+                                'audio_duration': result.get('audio_duration', 0),
+                                'language': result.get('language', ''),
+                                'total_segments': result.get('total_segments', 0),
+                            })
                 except Exception as e:
                     all_results.append({
                         'file': fpath, 'filename': fname, 'is_video': is_video,
@@ -3051,7 +3257,7 @@ def not_found(e):
 
 @app.errorhandler(413)
 def too_large(e):
-    return jsonify(error="File too large (50MB max)"), 413
+    return jsonify(error="File too large (500MB max)"), 413
 
 @app.errorhandler(500)
 def server_error(e):
