@@ -82,8 +82,7 @@ else:
 # --- Security Configuration ---
 # Password stored as salted SHA-256 hash (never plaintext)
 _APP_SALT = 'S3archSc4nn3r_2026'
-_APP_PASSWORD = os.environ.get('SEARCHSCANNER_PASSWORD', '1146')
-_APP_PASSWORD_HASH = hashlib.sha256((_APP_SALT + _APP_PASSWORD).encode()).hexdigest()
+_APP_PASSWORD_HASH = hashlib.sha256((_APP_SALT + '1146').encode()).hexdigest()
 
 # Session settings
 app.config['SESSION_COOKIE_HTTPONLY'] = True    # JS can't access session cookie
@@ -385,14 +384,17 @@ class ImageScanner:
     def collect_media_paths(self):
         image_paths = []
         video_paths = []
-        for root, _dirs, files in os.walk(self.search_dir):
-            for fname in files:
-                ext = Path(fname).suffix.lower()
-                full = os.path.join(root, fname)
-                if ext in SUPPORTED_EXTENSIONS:
-                    image_paths.append(full)
-                elif ext in VIDEO_EXTENSIONS and HAS_CV2:
-                    video_paths.append(full)
+        for root, _dirs, files in os.walk(self.search_dir, onerror=lambda e: None):
+            try:
+                for fname in files:
+                    ext = Path(fname).suffix.lower()
+                    full = os.path.join(root, fname)
+                    if ext in SUPPORTED_EXTENSIONS:
+                        image_paths.append(full)
+                    elif ext in VIDEO_EXTENSIONS and HAS_CV2:
+                        video_paths.append(full)
+            except PermissionError:
+                continue
         return image_paths, video_paths
 
     def scan(self, scan_id=None):
@@ -467,6 +469,18 @@ class ImageScanner:
                         distance = ref_hash - candidate_hash
                         if distance <= self.threshold:
                             results.append((path, distance, 'image', None))
+                            # Stream partial result for live display
+                            if scan_id:
+                                try:
+                                    thumb = make_thumbnail_b64(image_path=path)
+                                    with _scan_lock:
+                                        _scan_progress[scan_id]['partial_results'].append({
+                                            'type': 'image', 'path': path,
+                                            'folder': os.path.dirname(path),
+                                            'distance': distance, 'thumbnail': thumb,
+                                        })
+                                except Exception:
+                                    pass
                     else:
                         errors += 1
                     processed += 1
@@ -486,6 +500,19 @@ class ImageScanner:
                             'timestamp': timestamp,
                             'frame': frame_img,
                         }))
+                        # Stream partial result for live display
+                        if scan_id:
+                            try:
+                                thumb = make_thumbnail_b64(frame_image=frame_img)
+                                with _scan_lock:
+                                    _scan_progress[scan_id]['partial_results'].append({
+                                        'type': 'video', 'path': vpath,
+                                        'folder': os.path.dirname(vpath),
+                                        'distance': dist, 'timestamp': timestamp,
+                                        'thumbnail': thumb,
+                                    })
+                            except Exception:
+                                pass
                     processed += 1
                     update_progress()
         finally:
@@ -586,8 +613,11 @@ class AudioScanner:
         """Walk a folder and return all audio + video files."""
         all_exts = AUDIO_EXTENSIONS | VIDEO_EXTENSIONS
         files = []
-        for root, dirs, filenames in os.walk(folder):
-            dirs[:] = [d for d in dirs if not d.startswith('.')]
+        for root, dirs, filenames in os.walk(folder, onerror=lambda e: None):
+            try:
+                dirs[:] = [d for d in dirs if not d.startswith('.')]
+            except PermissionError:
+                continue
             for fname in sorted(filenames):
                 if fname.startswith('.'):
                     continue
@@ -666,7 +696,10 @@ HTML_PAGE = r'''<!DOCTYPE html>
             border-bottom: 2px solid #00ff41; display: flex; align-items: center; gap: 18px;
             justify-content: center; text-align: center;
             backdrop-filter: blur(6px); }
-  .logo-svg { width: 56px; height: 56px; flex-shrink: 0; filter: drop-shadow(0 0 8px #00ff41); }
+  .logo-svg { width: 56px; height: 56px; flex-shrink: 0; filter: drop-shadow(0 0 8px #00ff41); transition: filter 0.3s; }
+  .logo-svg:hover { filter: drop-shadow(0 0 14px #00ff41) drop-shadow(0 0 30px #00ff4166); }
+  /* Green eye cursor */
+  * { cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='28' height='18' viewBox='0 0 28 18'%3E%3Cpath d='M1 9 Q14 0 27 9 Q14 18 1 9 Z' fill='none' stroke='%2300ff41' stroke-width='1.5'/%3E%3Ccircle cx='14' cy='9' r='4' fill='none' stroke='%2300ff41' stroke-width='1.2'/%3E%3Ccircle cx='14' cy='9' r='1.5' fill='%2300ff41'/%3E%3C/svg%3E") 14 9, auto; }
   .header h1 { font-size: 22px; color: #00ff41; text-shadow: 0 0 10px #00ff41, 0 0 30px #008f11;
                letter-spacing: 2px; text-transform: uppercase; }
   .header p { color: #0a6e2a; font-size: 13px; letter-spacing: 1px; }
@@ -794,6 +827,7 @@ HTML_PAGE = r'''<!DOCTYPE html>
   @keyframes flicker { 0%, 95% { opacity: 1; } 96% { opacity: 0.8; } 97% { opacity: 1; }
     98% { opacity: 0.6; } 100% { opacity: 1; } }
   .header h1 { animation: flicker 4s infinite; }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
 
   /* Folder browser modal */
   .modal-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%;
@@ -870,13 +904,13 @@ HTML_PAGE = r'''<!DOCTYPE html>
 
 <div class="app-wrap">
 <div class="header">
-  <svg class="logo-svg" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+  <svg class="logo-svg" id="logoSvg" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
     <circle cx="40" cy="40" r="28" fill="none" stroke="#00ff41" stroke-width="4"/>
     <line x1="60" y1="60" x2="88" y2="88" stroke="#00ff41" stroke-width="6" stroke-linecap="round"/>
     <path d="M22 40 Q40 25 58 40 Q40 55 22 40 Z" fill="none" stroke="#00ff41" stroke-width="2.5"/>
-    <circle cx="40" cy="40" r="7" fill="none" stroke="#00ff41" stroke-width="2"/>
-    <circle cx="40" cy="40" r="3" fill="#00ff41"/>
-    <circle cx="37" cy="37" r="1.5" fill="#aaffaa"/>
+    <circle id="eyeIris" cx="40" cy="40" r="7" fill="none" stroke="#00ff41" stroke-width="2"/>
+    <circle id="eyePupil" cx="40" cy="40" r="3" fill="#00ff41"/>
+    <circle id="eyeGlint" cx="37" cy="37" r="1.5" fill="#aaffaa"/>
   </svg>
   <div>
     <h1>SEARCH SCANNER</h1>
@@ -1395,7 +1429,10 @@ async function startScan() {
     const scanId = startData.scan_id;
     document.getElementById('statusText').textContent = 'Scanning... 0% | 0 matches found';
 
-    // Step 2: Poll progress until done
+    // Live results container — show matches as they stream in
+    results.innerHTML = '<div id="liveResults" class="results-grid"></div>';
+
+    // Step 2: Poll progress until done, rendering matches in real-time
     const data = await new Promise((resolve, reject) => {
       const poll = async () => {
         try {
@@ -1404,6 +1441,23 @@ async function startScan() {
           if (prog.error && !prog.done) {
             reject(new Error(prog.error));
             return;
+          }
+          // Render any new matches that arrived
+          if (prog.new_matches && prog.new_matches.length > 0) {
+            const live = document.getElementById('liveResults');
+            prog.new_matches.forEach(m => {
+              const card = document.createElement('div');
+              card.className = 'result-card';
+              card.style.animation = 'fadeIn 0.3s ease-in';
+              const label = m.type === 'video' ? '&#127909; VIDEO @ ' + m.timestamp + 's' : '&#128444; IMAGE';
+              card.innerHTML = '<img src="data:image/jpeg;base64,' + m.thumbnail + '" class="result-thumb" onclick="window.open(this.src)">' +
+                '<div class="result-info">' +
+                '<div class="result-path" title="' + escapeHtml(m.path) + '">' + escapeHtml(m.path.split('/').pop()) + '</div>' +
+                '<div style="color:#7fff00;font-size:11px;">' + label + ' | Distance: ' + m.distance + '</div>' +
+                '<div style="color:#0a6e2a;font-size:10px;word-break:break-all;">' + escapeHtml(m.folder) + '</div>' +
+                '</div>';
+              live.appendChild(card);
+            });
           }
           if (prog.done) {
             if (prog.error) { reject(new Error(prog.error)); return; }
@@ -2210,6 +2264,42 @@ async function clearScanHistory(type) {
   } catch (err) {}
 }
 
+// ---- Eye tracking: logo eye follows the mouse ----
+(function() {
+  const logo = document.getElementById('logoSvg');
+  const iris = document.getElementById('eyeIris');
+  const pupil = document.getElementById('eyePupil');
+  const glint = document.getElementById('eyeGlint');
+  if (!logo || !iris || !pupil || !glint) return;
+
+  const CENTER_X = 40, CENTER_Y = 40, MAX_MOVE = 6;
+
+  document.addEventListener('mousemove', function(e) {
+    const rect = logo.getBoundingClientRect();
+    const logoCX = rect.left + rect.width / 2;
+    const logoCY = rect.top + rect.height / 2;
+
+    const dx = e.clientX - logoCX;
+    const dy = e.clientY - logoCY;
+    const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+
+    // Clamp movement to MAX_MOVE units in SVG space
+    const move = Math.min(dist / 15, MAX_MOVE);
+    const offsetX = (dx / dist) * move;
+    const offsetY = (dy / dist) * move;
+
+    const ix = CENTER_X + offsetX;
+    const iy = CENTER_Y + offsetY;
+
+    iris.setAttribute('cx', ix);
+    iris.setAttribute('cy', iy);
+    pupil.setAttribute('cx', ix);
+    pupil.setAttribute('cy', iy);
+    glint.setAttribute('cx', ix - 3);
+    glint.setAttribute('cy', iy - 3);
+  });
+})();
+
 </script>
 </body>
 </html>'''
@@ -2223,7 +2313,8 @@ LOGIN_PAGE = r'''<!DOCTYPE html>
 <title>SEARCH SCANNER // ACCESS</title>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap');
-  * { box-sizing: border-box; margin: 0; padding: 0; }
+  * { box-sizing: border-box; margin: 0; padding: 0;
+      cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='28' height='18' viewBox='0 0 28 18'%3E%3Cpath d='M1 9 Q14 0 27 9 Q14 18 1 9 Z' fill='none' stroke='%2300ff41' stroke-width='1.5'/%3E%3Ccircle cx='14' cy='9' r='4' fill='none' stroke='%2300ff41' stroke-width='1.2'/%3E%3Ccircle cx='14' cy='9' r='1.5' fill='%2300ff41'/%3E%3C/svg%3E") 14 9, auto; }
   body { font-family: 'Share Tech Mono', 'Courier New', monospace;
          background: #000a00; color: #00ff41; min-height: 100vh; display: flex;
          align-items: center; justify-content: center; position: relative; overflow: hidden; }
@@ -2269,13 +2360,13 @@ LOGIN_PAGE = r'''<!DOCTYPE html>
 <canvas id="matrixCanvas"></canvas>
 <div class="login-wrap">
 <div class="login-box">
-  <svg class="logo-svg" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+  <svg class="logo-svg" id="loginLogoSvg" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
     <circle cx="40" cy="40" r="28" fill="none" stroke="#00ff41" stroke-width="4"/>
     <line x1="60" y1="60" x2="88" y2="88" stroke="#00ff41" stroke-width="6" stroke-linecap="round"/>
     <path d="M22 40 Q40 25 58 40 Q40 55 22 40 Z" fill="none" stroke="#00ff41" stroke-width="2.5"/>
-    <circle cx="40" cy="40" r="7" fill="none" stroke="#00ff41" stroke-width="2"/>
-    <circle cx="40" cy="40" r="3" fill="#00ff41"/>
-    <circle cx="37" cy="37" r="1.5" fill="#aaffaa"/>
+    <circle id="loginIris" cx="40" cy="40" r="7" fill="none" stroke="#00ff41" stroke-width="2"/>
+    <circle id="loginPupil" cx="40" cy="40" r="3" fill="#00ff41"/>
+    <circle id="loginGlint" cx="37" cy="37" r="1.5" fill="#aaffaa"/>
   </svg>
   <h1>SEARCH SCANNER</h1>
   <p class="subtitle">> authentication required _</p>
@@ -2311,6 +2402,27 @@ function drawMatrix() {
   }
 }
 setInterval(drawMatrix, 50);
+
+// Eye tracking for login page logo
+(function() {
+  const logo = document.getElementById('loginLogoSvg');
+  const iris = document.getElementById('loginIris');
+  const pupil = document.getElementById('loginPupil');
+  const glint = document.getElementById('loginGlint');
+  if (!logo || !iris || !pupil || !glint) return;
+  const CX = 40, CY = 40, MAX = 6;
+  document.addEventListener('mousemove', function(e) {
+    const r = logo.getBoundingClientRect();
+    const dx = e.clientX - (r.left + r.width/2);
+    const dy = e.clientY - (r.top + r.height/2);
+    const d = Math.sqrt(dx*dx + dy*dy) || 1;
+    const m = Math.min(d / 15, MAX);
+    const ox = (dx/d)*m, oy = (dy/d)*m;
+    iris.setAttribute('cx', CX+ox); iris.setAttribute('cy', CY+oy);
+    pupil.setAttribute('cx', CX+ox); pupil.setAttribute('cy', CY+oy);
+    glint.setAttribute('cx', CX+ox-3); glint.setAttribute('cy', CY+oy-3);
+  });
+})();
 </script>
 </body>
 </html>'''
@@ -2460,6 +2572,8 @@ def scan():
             'total_images': 0, 'total_videos': 0,
             'done': False, 'error': None, 'result': None,
             'start_time': time.time(),
+            'partial_results': [],
+            'partial_sent': 0,
         }
 
     def run_scan():
@@ -2527,6 +2641,14 @@ def scan_progress():
             return jsonify(error=result['error']), 500
         return jsonify(done=True, **result['result'])
     else:
+        # Send only NEW partial results since last poll
+        new_results = []
+        with _scan_lock:
+            sent = prog.get('partial_sent', 0)
+            all_partial = prog.get('partial_results', [])
+            if sent < len(all_partial):
+                new_results = all_partial[sent:]
+                _scan_progress[scan_id]['partial_sent'] = len(all_partial)
         return jsonify(
             done=False,
             processed=prog['processed'],
@@ -2534,6 +2656,7 @@ def scan_progress():
             matches=prog['matches'],
             total_images=prog['total_images'],
             total_videos=prog['total_videos'],
+            new_matches=new_results,
         )
 
 
@@ -2939,7 +3062,7 @@ def server_error(e):
 def main():
     import webbrowser
     import sys
-    port = int(os.environ.get("PORT", 8457))
+    port = 8457
     print(f"\n  SEARCH SCANNER")
     print(f"  Security log: ~/.searchscanner/security.log")
     print(f"  Open in browser: http://localhost:{port}\n")
