@@ -891,10 +891,13 @@ class VideoAnalyzer:
         self._update_progress(scan_id, 'analyzing', 'Checking for text overlays...', 80)
         self._detect_text_overlays()
 
-        self._update_progress(scan_id, 'analyzing', 'Analyzing opening hook...', 88)
+        self._update_progress(scan_id, 'analyzing', 'Analyzing opening hook...', 82)
         self._analyze_hook()
 
-        self._update_progress(scan_id, 'scoring', 'Calculating platform scores...', 92)
+        self._update_progress(scan_id, 'transcribing', 'Transcribing audio...', 85)
+        self._transcribe_audio(scan_id)
+
+        self._update_progress(scan_id, 'scoring', 'Calculating platform scores...', 95)
         scores = self._score_all_platforms()
 
         self._update_progress(scan_id, 'done', 'Analysis complete', 100)
@@ -1124,6 +1127,147 @@ class VideoAnalyzer:
         except Exception:
             self.props['hook_strength'] = 0
 
+    def _transcribe_audio(self, scan_id=None):
+        """Extract audio from video, transcribe with Whisper, analyze the script."""
+        self.props['transcript'] = ''
+        self.props['word_count'] = 0
+        self.props['words_per_min'] = 0
+        self.props['script_tips'] = []
+
+        if not self.props.get('has_audio', False):
+            self.props['script_tips'] = ['No audio track — add voiceover or narration for better engagement']
+            return
+        if not HAS_WHISPER:
+            self.props['script_tips'] = ['Whisper not available — install faster-whisper for script analysis']
+            return
+
+        try:
+            # Extract audio to wav
+            self._update_progress(scan_id, 'transcribing', 'Extracting audio from video...', 86)
+            wav_path = AudioScanner.extract_audio_from_video(self.video_path)
+            if not wav_path:
+                self.props['script_tips'] = ['Could not extract audio — try a different video format']
+                return
+
+            # Transcribe
+            self._update_progress(scan_id, 'transcribing', 'Running speech recognition...', 88)
+            model = _get_whisper_model()
+            segments, info = model.transcribe(wav_path, beam_size=3, language=None, vad_filter=True)
+            full_text = ''
+            seg_texts = []
+            for seg in segments:
+                full_text += seg.text + ' '
+                seg_texts.append(seg.text.strip())
+
+            # Cleanup temp wav
+            try:
+                os.unlink(wav_path)
+            except OSError:
+                pass
+
+            full_text = full_text.strip()
+            self.props['transcript'] = full_text
+            self.props['detected_language'] = getattr(info, 'language', 'unknown')
+
+            # Analyze script
+            self._update_progress(scan_id, 'transcribing', 'Analyzing script content...', 92)
+            self._analyze_script(full_text, seg_texts)
+
+        except Exception as e:
+            self.props['script_tips'] = [f'Transcription failed — {str(e)[:80]}']
+
+    def _analyze_script(self, text, segments):
+        """Analyze transcript for engagement quality."""
+        tips = []
+        dur = self.props.get('duration', 1)
+        words = text.split()
+        word_count = len(words)
+        wpm = round(word_count / max(dur / 60, 0.1))
+        self.props['word_count'] = word_count
+        self.props['words_per_min'] = wpm
+
+        if word_count == 0:
+            tips.append('No speech detected — add voiceover or narration to dramatically boost engagement')
+            self.props['has_speech'] = False
+            self.props['script_tips'] = tips
+            return
+
+        self.props['has_speech'] = True
+
+        # Speaking pace analysis
+        if wpm < 80:
+            tips.append(f'Speaking pace is slow ({wpm} wpm) — aim for 130-170 words per minute for energetic delivery')
+        elif wpm > 200:
+            tips.append(f'Speaking pace is very fast ({wpm} wpm) — slow down slightly for clarity (130-170 wpm is ideal)')
+        elif 130 <= wpm <= 170:
+            pass  # Good pace, strength handled in platform scoring
+        elif wpm < 130:
+            tips.append(f'Speaking pace ({wpm} wpm) could be a bit faster — 130-170 wpm sounds natural and engaging')
+
+        # Hook analysis — check first segment
+        if segments and len(segments) > 0:
+            first_words = segments[0].lower() if segments[0] else ''
+            hook_words = ['you', 'how', 'why', 'what', 'did you', 'here', 'stop', 'wait', 'listen',
+                         'secret', 'hack', 'tip', 'mistake', 'never', 'always', 'best', 'worst',
+                         'question', 'imagine', 'picture this', 'let me', 'i need']
+            has_hook = any(hw in first_words for hw in hook_words)
+            if not has_hook and word_count > 20:
+                tips.append('Open with a hook — start with a question, bold statement, or "you" to grab attention instantly')
+
+        # Call-to-action check
+        text_lower = text.lower()
+        cta_phrases = ['subscribe', 'follow', 'like', 'comment', 'share', 'link', 'check out',
+                       'click', 'tap', 'swipe', 'let me know', 'tell me', 'what do you think',
+                       'drop a', 'hit the', 'sign up', 'download']
+        has_cta = any(cta in text_lower for cta in cta_phrases)
+        if not has_cta and word_count > 30:
+            tips.append('Add a call-to-action — ask viewers to like, comment, follow, or share for algorithm boost')
+
+        # Question engagement
+        question_count = text.count('?')
+        if question_count == 0 and word_count > 50:
+            tips.append('Ask questions in your script — questions increase comments and boost algorithm ranking')
+
+        # Filler word detection
+        fillers = ['um', 'uh', 'like', 'you know', 'basically', 'literally', 'actually', 'sort of', 'kind of']
+        filler_count = 0
+        for f in fillers:
+            filler_count += text_lower.split().count(f)
+        filler_ratio = filler_count / max(word_count, 1)
+        if filler_ratio > 0.05:
+            tips.append(f'Reduce filler words (detected ~{filler_count}) — clean speech sounds more professional and holds attention')
+
+        # Repetition / keyword density
+        if word_count > 30:
+            word_freq = {}
+            stopwords = {'the','a','an','is','it','in','to','of','and','or','for','on','at','by','i','we','you','he','she','they','this','that','my','your','with','from','was','be','are','has','have','had','do','does','did','but','not','so','if','as','can','will','just','its','me','our','up','out','no','all','been','about','would','could','should','what','when','where','how','which','who','more','some','them','than','into','over','also','then','now','very','here','there','too','only','own','these','those','other','each','every','after','before','while','still'}
+            for w in words:
+                wl = w.lower().strip('.,!?;:"\'-()[]')
+                if len(wl) > 2 and wl not in stopwords:
+                    word_freq[wl] = word_freq.get(wl, 0) + 1
+            top_words = sorted(word_freq.items(), key=lambda x: -x[1])[:3]
+            if top_words and top_words[0][1] >= word_count * 0.08 and word_count > 50:
+                tips.append(f'Word "{top_words[0][0]}" appears {top_words[0][1]} times — vary your vocabulary to keep it fresh')
+
+        # Sentence/segment length variety
+        if len(segments) >= 3:
+            lengths = [len(s.split()) for s in segments if s.strip()]
+            if lengths:
+                avg_len = sum(lengths) / len(lengths)
+                variance = sum((l - avg_len) ** 2 for l in lengths) / len(lengths)
+                if variance < 4 and avg_len > 5:
+                    tips.append('Vary sentence lengths — mix short punchy lines with longer ones to create rhythm')
+
+        # Emotional/power word check
+        power_words = ['amazing', 'incredible', 'unbelievable', 'shocking', 'powerful', 'essential',
+                       'proven', 'guaranteed', 'exclusive', 'discover', 'transform', 'breakthrough',
+                       'game-changing', 'mind-blowing', 'insane', 'crazy', 'epic', 'ultimate']
+        has_power = any(pw in text_lower for pw in power_words)
+        if not has_power and word_count > 40:
+            tips.append('Use power words — words like "incredible", "essential", "proven" boost emotional engagement')
+
+        self.props['script_tips'] = tips
+
     def _score_all_platforms(self):
         results = {}
         for key, spec in PLATFORM_SPECS.items():
@@ -1323,6 +1467,17 @@ class VideoAnalyzer:
             improve.append(f'Frame rate ({vid_fps:.0f} fps) is too low — aim for {fps_lo}-{fps_hi} fps')
 
         breakdown['platform_bonus'] = int((bright_score + sat_score + caption_score + fps_score) / 4)
+
+        # --- Script/Speech insights for this platform ---
+        has_speech = p.get('has_speech', False)
+        wpm = p.get('words_per_min', 0)
+        if has_speech:
+            if 130 <= wpm <= 170:
+                strengths.append(f'Speaking pace ({wpm} wpm) is excellent for engagement')
+            if p.get('word_count', 0) > 0 and spec.get('audio_required'):
+                strengths.append('Voiceover/speech detected — spoken content performs well on this platform')
+        elif p.get('has_audio', False) and spec.get('audio_required'):
+            improve.append('No speech detected — add voiceover or talking to connect with your audience')
 
         # --- Weighted Total ---
         total = 0
@@ -3667,11 +3822,37 @@ function renderAlgorithmResults(data) {
     ['Text Overlays', p.has_text_overlay ? 'Yes' : 'No'],
     ['Hook Strength', (p.hook_strength||0) + '/100'],
     ['Brightness', Math.round(p.avg_brightness||0) + '/255'],
+    ['Speech', p.has_speech ? 'Yes (' + (p.word_count||0) + ' words, ' + (p.words_per_min||0) + ' wpm)' : (p.has_audio ? 'No speech detected' : 'No audio')],
   ];
   props.forEach(function(pr) {
     html += '<div class="algo-prop"><span class="prop-label">' + pr[0] + '</span><span class="prop-value">' + pr[1] + '</span></div>';
   });
   html += '</div>';
+
+  // Script Analysis Section
+  if (p.transcript || (p.script_tips && p.script_tips.length > 0)) {
+    html += '<div style="font-size:11px;color:var(--text-dimmer);text-transform:uppercase;letter-spacing:2px;margin-bottom:8px">> Script Analysis</div>';
+    html += '<div class="algo-detail" style="margin-bottom:20px">';
+    if (p.transcript && p.transcript.length > 0) {
+      html += '<div class="algo-detail-header">';
+      html += '<span class="detail-icon">&#128172;</span>';
+      html += '<span class="detail-name">Transcript</span>';
+      html += '<span style="font-size:11px;color:var(--text-dimmer)">' + (p.word_count||0) + ' words &bull; ' + (p.words_per_min||0) + ' wpm &bull; ' + (p.detected_language||'') + '</span>';
+      html += '</div>';
+      html += '<div style="font-size:12px;color:var(--text-dim);line-height:1.7;padding:12px;background:var(--accent-faint);border-radius:6px;max-height:200px;overflow-y:auto;margin-bottom:14px;white-space:pre-wrap;word-wrap:break-word">';
+      html += p.transcript;
+      html += '</div>';
+    }
+    if (p.script_tips && p.script_tips.length > 0) {
+      html += '<div style="font-size:10px;color:var(--text-dimmer);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px">&#9997; Script Improvement Tips</div>';
+      html += '<ul class="algo-tips algo-improve">';
+      p.script_tips.forEach(function(tip) { html += '<li>' + tip + '</li>'; });
+      html += '</ul>';
+    } else if (p.has_speech) {
+      html += '<div class="algo-no-tips">> Script looks great — no major improvements needed!</div>';
+    }
+    html += '</div>';
+  }
 
   // Score Cards Overview
   html += '<div style="font-size:11px;color:var(--text-dimmer);text-transform:uppercase;letter-spacing:2px;margin-bottom:8px">> Platform Scores</div>';
