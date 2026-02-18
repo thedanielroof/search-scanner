@@ -1033,16 +1033,37 @@ HTML_PAGE = r'''<!DOCTYPE html>
     padding:16px; background:var(--bg-panel); max-height:400px;
     overflow-y:auto; font-size:13px; line-height:1.8; color:var(--accent-dim); }
 
-  /* Theme toggle */
-  .theme-toggle { position:absolute; right:20px; top:50%; transform:translateY(-50%);
+  /* Theme selector dropdown */
+  .theme-selector { position:relative; margin-left:16px; flex-shrink:0; }
+  .theme-btn {
     background:var(--bg-panel); border:1px solid var(--border); color:var(--accent-dim);
-    padding:6px 12px; border-radius:20px; cursor:pointer; font-family:var(--font);
+    padding:6px 14px; border-radius:20px; cursor:pointer; font-family:var(--font);
     font-size:11px; letter-spacing:1px; transition:all 0.3s; display:flex; align-items:center; gap:6px;
-    backdrop-filter:blur(8px); -webkit-backdrop-filter:blur(8px); z-index:10; }
-  .theme-toggle:hover { border-color:var(--accent); color:var(--accent);
+    backdrop-filter:blur(8px); -webkit-backdrop-filter:blur(8px); }
+  .theme-btn:hover { border-color:var(--accent); color:var(--accent);
     box-shadow:0 0 12px var(--glow-shadow); }
-  .theme-toggle .theme-dot { width:8px; height:8px; border-radius:50%;
+  .theme-btn .theme-dot { width:8px; height:8px; border-radius:50%;
     background:var(--accent); box-shadow:0 0 6px var(--accent); transition:all 0.3s; }
+  .theme-btn .arrow { font-size:8px; margin-left:2px; transition:transform 0.2s; }
+  .theme-selector.open .theme-btn .arrow { transform:rotate(180deg); }
+  .theme-menu { position:absolute; top:calc(100% + 8px); right:0; min-width:160px;
+    background:var(--bg-panel); border:1px solid var(--border); border-radius:8px;
+    backdrop-filter:blur(20px); -webkit-backdrop-filter:blur(20px);
+    box-shadow:0 8px 32px rgba(0,0,0,0.4); padding:6px 0;
+    opacity:0; visibility:hidden; transform:translateY(-6px);
+    transition:all 0.2s ease; z-index:100; }
+  .theme-selector.open .theme-menu { opacity:1; visibility:visible; transform:translateY(0); }
+  .theme-option { display:flex; align-items:center; gap:10px; padding:10px 16px;
+    cursor:pointer; transition:background 0.15s; font-family:var(--font);
+    font-size:12px; color:var(--accent-dim); letter-spacing:1px; }
+  .theme-option:hover { background:var(--hover-bg); color:var(--accent); }
+  .theme-option.active { color:var(--accent); }
+  .theme-option .opt-dot { width:10px; height:10px; border-radius:50%; flex-shrink:0;
+    border:2px solid currentColor; transition:all 0.2s; }
+  .theme-option.active .opt-dot { background:var(--accent); box-shadow:0 0 8px var(--accent); }
+  .theme-option .opt-label { flex:1; }
+  .theme-option .opt-check { font-size:14px; opacity:0; transition:opacity 0.2s; }
+  .theme-option.active .opt-check { opacity:1; }
 </style>
 </head>
 <body>
@@ -1063,9 +1084,23 @@ HTML_PAGE = r'''<!DOCTYPE html>
     <h1>SEARCH SCANNER</h1>
     <p>UPLOAD / SEARCH / MATCH</p>
   </div>
-  <button class="theme-toggle" onclick="toggleTheme()" title="Switch Theme">
-    <span class="theme-dot"></span> <span id="themeLabel">MATRIX</span>
-  </button>
+  <div class="theme-selector" id="themeSelector">
+    <button class="theme-btn" onclick="toggleThemeMenu(event)" title="Switch Theme">
+      <span class="theme-dot"></span> <span id="themeLabel">MATRIX</span> <span class="arrow">&#9660;</span>
+    </button>
+    <div class="theme-menu" id="themeMenu">
+      <div class="theme-option active" data-theme="matrix" onclick="selectTheme('matrix')">
+        <span class="opt-dot" style="color:#00ff41;"></span>
+        <span class="opt-label">MATRIX</span>
+        <span class="opt-check">&#10003;</span>
+      </div>
+      <div class="theme-option" data-theme="glass" onclick="selectTheme('glass')">
+        <span class="opt-dot" style="color:#7eb8ff;"></span>
+        <span class="opt-label">GLASS</span>
+        <span class="opt-check">&#10003;</span>
+      </div>
+    </div>
+  </div>
 </div>
 
 <div class="main">
@@ -2641,16 +2676,31 @@ function applyTheme(theme) {
   document.querySelectorAll('.logo-glint').forEach(el => el.setAttribute('fill', t.glint));
   // Update label
   const label = document.getElementById('themeLabel');
-  if (label) label.textContent = theme === 'glass' ? 'GLASS' : 'MATRIX';
+  if (label) label.textContent = theme.toUpperCase();
   // Update matrix rain colors for glass
   window._themeMatrixFill = t.matrixFill;
   window._themeMatrixBg = t.matrixBg;
+  // Update menu active states
+  document.querySelectorAll('.theme-option').forEach(opt => {
+    opt.classList.toggle('active', opt.dataset.theme === theme);
+  });
   localStorage.setItem('ss-theme', theme);
 }
-function toggleTheme() {
-  const current = localStorage.getItem('ss-theme') || 'matrix';
-  applyTheme(current === 'matrix' ? 'glass' : 'matrix');
+function toggleThemeMenu(e) {
+  e.stopPropagation();
+  const sel = document.getElementById('themeSelector');
+  if (sel) sel.classList.toggle('open');
 }
+function selectTheme(theme) {
+  applyTheme(theme);
+  const sel = document.getElementById('themeSelector');
+  if (sel) sel.classList.remove('open');
+}
+// Close menu on outside click
+document.addEventListener('click', function(e) {
+  const sel = document.getElementById('themeSelector');
+  if (sel && !sel.contains(e.target)) sel.classList.remove('open');
+});
 // Apply saved theme on load
 applyTheme(localStorage.getItem('ss-theme') || 'matrix');
 
@@ -2743,23 +2793,59 @@ LOGIN_PAGE = r'''<!DOCTYPE html>
   .login-box h1 { animation: flicker 4s infinite; }
   .lock-icon { font-size: 10px; color: var(--text-dimmer); margin-top: 18px; }
 
-  .theme-toggle-login { position: fixed; top: 20px; right: 20px; z-index: 10001;
+  .theme-selector-login { position: fixed; top: 20px; right: 20px; z-index: 10001; }
+  .theme-selector-login .theme-btn {
     background: rgba(0,10,0,0.6); border: 1px solid var(--accent-dimmer); color: var(--accent-dim);
-    padding: 6px 12px; border-radius: 20px; cursor: pointer; font-family: var(--font);
+    padding: 6px 14px; border-radius: 20px; cursor: pointer; font-family: var(--font);
     font-size: 11px; letter-spacing: 1px; transition: all 0.3s; display: flex; align-items: center; gap: 6px;
     backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }
-  body.glass .theme-toggle-login { background: rgba(20,20,50,0.5); }
-  .theme-toggle-login:hover { border-color: var(--accent); color: var(--accent);
+  body.glass .theme-selector-login .theme-btn { background: rgba(20,20,50,0.5); }
+  .theme-selector-login .theme-btn:hover { border-color: var(--accent); color: var(--accent);
     box-shadow: 0 0 12px var(--glow-shadow); }
-  .theme-toggle-login .theme-dot { width: 8px; height: 8px; border-radius: 50%;
+  .theme-selector-login .theme-dot { width: 8px; height: 8px; border-radius: 50%;
     background: var(--accent); box-shadow: 0 0 6px var(--accent); transition: all 0.3s; }
+  .theme-selector-login .arrow { font-size: 8px; margin-left: 2px; transition: transform 0.2s; }
+  .theme-selector-login.open .arrow { transform: rotate(180deg); }
+  .theme-menu { position: absolute; top: calc(100% + 8px); right: 0; min-width: 160px;
+    background: var(--bg-panel); border: 1px solid var(--border); border-radius: 8px;
+    backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+    box-shadow: 0 8px 32px rgba(0,0,0,0.4); padding: 6px 0;
+    opacity: 0; visibility: hidden; transform: translateY(-6px);
+    transition: all 0.2s ease; z-index: 100; }
+  body.glass .theme-menu { background: rgba(20,20,50,0.8); }
+  .theme-selector-login.open .theme-menu { opacity: 1; visibility: visible; transform: translateY(0); }
+  .theme-option { display: flex; align-items: center; gap: 10px; padding: 10px 16px;
+    cursor: pointer; transition: background 0.15s; font-family: var(--font);
+    font-size: 12px; color: var(--accent-dim); letter-spacing: 1px; }
+  .theme-option:hover { background: var(--hover-bg); color: var(--accent); }
+  .theme-option.active { color: var(--accent); }
+  .theme-option .opt-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0;
+    border: 2px solid currentColor; transition: all 0.2s; }
+  .theme-option.active .opt-dot { background: var(--accent); box-shadow: 0 0 8px var(--accent); }
+  .theme-option .opt-label { flex: 1; }
+  .theme-option .opt-check { font-size: 14px; opacity: 0; transition: opacity 0.2s; }
+  .theme-option.active .opt-check { opacity: 1; }
 </style>
 </head>
 <body>
 <canvas id="matrixCanvas"></canvas>
-<button class="theme-toggle-login" onclick="toggleTheme()" title="Switch Theme">
-  <span class="theme-dot"></span> <span id="themeLabel">MATRIX</span>
-</button>
+<div class="theme-selector-login" id="themeSelector">
+  <button class="theme-btn" onclick="toggleThemeMenu(event)" title="Switch Theme">
+    <span class="theme-dot"></span> <span id="themeLabel">MATRIX</span> <span class="arrow">&#9660;</span>
+  </button>
+  <div class="theme-menu" id="themeMenu">
+    <div class="theme-option active" data-theme="matrix" onclick="selectTheme('matrix')">
+      <span class="opt-dot" style="color:#00ff41;"></span>
+      <span class="opt-label">MATRIX</span>
+      <span class="opt-check">&#10003;</span>
+    </div>
+    <div class="theme-option" data-theme="glass" onclick="selectTheme('glass')">
+      <span class="opt-dot" style="color:#7eb8ff;"></span>
+      <span class="opt-label">GLASS</span>
+      <span class="opt-check">&#10003;</span>
+    </div>
+  </div>
+</div>
 <div class="login-wrap">
 <div class="login-box">
   <svg class="logo-svg" id="loginLogoSvg" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
@@ -2850,14 +2936,26 @@ function applyTheme(theme) {
   document.querySelectorAll('.logo-glint').forEach(el => el.setAttribute('fill', t.glint));
   const label = document.getElementById('themeLabel');
   if (label) label.textContent = theme === 'glass' ? 'GLASS' : 'MATRIX';
+  // Update dropdown active states
+  document.querySelectorAll('.theme-option').forEach(opt => {
+    opt.classList.toggle('active', opt.getAttribute('data-theme') === theme);
+  });
   window._themeMatrixFill = t.matrixFill;
   window._themeMatrixBg = t.matrixBg;
   localStorage.setItem('ss-theme', theme);
 }
-function toggleTheme() {
-  const current = localStorage.getItem('ss-theme') || 'matrix';
-  applyTheme(current === 'matrix' ? 'glass' : 'matrix');
+function toggleThemeMenu(e) {
+  e.stopPropagation();
+  document.getElementById('themeSelector').classList.toggle('open');
 }
+function selectTheme(theme) {
+  applyTheme(theme);
+  document.getElementById('themeSelector').classList.remove('open');
+}
+document.addEventListener('click', function(e) {
+  const sel = document.getElementById('themeSelector');
+  if (sel && !sel.contains(e.target)) sel.classList.remove('open');
+});
 applyTheme(localStorage.getItem('ss-theme') || 'matrix');
 </script>
 </body>
