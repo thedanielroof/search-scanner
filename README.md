@@ -13,20 +13,20 @@ Matrix-themed web app for scanning files by visual similarity, audio transcripti
 
 ### Deploy to Render (Free)
 
-[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy)
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/thedanielroof/search-scanner)
 
 > After clicking, connect your GitHub fork of this repo. Set `SEARCHSCANNER_PASSWORD` to your desired login password.
 
 ### Deploy on Railway
 
-[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/new)
+[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/new/template?referralCode=&repo=https://github.com/thedanielroof/search-scanner)
 
 > Connect your GitHub fork. Set `SEARCHSCANNER_PASSWORD` in the Variables tab.
 
 ## Local Setup
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/search-scanner.git
+git clone https://github.com/thedanielroof/search-scanner.git
 cd search-scanner
 pip install -r requirements.txt
 python image_finder.py
