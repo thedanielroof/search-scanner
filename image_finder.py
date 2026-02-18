@@ -427,9 +427,10 @@ class ImageScanner:
         img_workers = os.cpu_count() or 4
         vid_workers = min(8, os.cpu_count() or 4)
 
-        # ProcessPoolExecutor for images (bypasses GIL for CPU-bound hashing)
-        # ThreadPoolExecutor for videos (cv2.VideoCapture not fork-safe)
-        img_executor = concurrent.futures.ProcessPoolExecutor(max_workers=img_workers)
+        # ThreadPoolExecutor for both — ProcessPoolExecutor causes
+        # "child process terminated abruptly" crashes on macOS due to fork issues
+        # with Flask, OpenCV, and ObjC runtime. Pillow releases the GIL so threads work fine.
+        img_executor = concurrent.futures.ThreadPoolExecutor(max_workers=img_workers)
         vid_executor = concurrent.futures.ThreadPoolExecutor(max_workers=vid_workers)
 
         try:
