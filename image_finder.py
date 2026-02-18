@@ -126,6 +126,43 @@ _algorithm_progress = {}
 _algorithm_lock = threading.Lock()
 ALGORITHM_UPLOAD_DIR = tempfile.mkdtemp(prefix="algorithm_")
 
+# Writer analysis progress tracking
+_writer_progress = {}
+_writer_lock = threading.Lock()
+WRITER_UPLOAD_DIR = tempfile.mkdtemp(prefix="writer_")
+
+# Optional imports for Writer file support
+try:
+    import docx as python_docx
+    HAS_DOCX = True
+except ImportError:
+    HAS_DOCX = False
+try:
+    import PyPDF2
+    HAS_PDF = True
+except ImportError:
+    HAS_PDF = False
+
+def _extract_text_from_file(filepath, ext):
+    """Extract text from uploaded file based on extension."""
+    ext = ext.lower()
+    if ext in ('.txt', '.md'):
+        with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
+            return f.read()
+    elif ext == '.docx' and HAS_DOCX:
+        doc = python_docx.Document(filepath)
+        return '\n\n'.join(p.text for p in doc.paragraphs if p.text.strip())
+    elif ext == '.pdf' and HAS_PDF:
+        reader = PyPDF2.PdfReader(filepath)
+        return '\n\n'.join(page.extract_text() or '' for page in reader.pages)
+    elif ext == '.docx' and not HAS_DOCX:
+        raise ValueError("DOCX support requires python-docx. Install with: pip3 install python-docx")
+    elif ext == '.pdf' and not HAS_PDF:
+        raise ValueError("PDF support requires PyPDF2. Install with: pip3 install PyPDF2")
+    else:
+        with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
+            return f.read()
+
 # Lazy-loaded whisper model singleton
 _whisper_model = None
 _whisper_model_lock = threading.Lock()
@@ -2073,6 +2110,596 @@ class VideoAnalyzer:
         }
 
 
+# ==================== WRITER: Writing Analyzer ====================
+class WritingAnalyzer:
+    """Analyze text writing for clarity, engagement, structure, word choice, grammar, and persuasion."""
+
+    def __init__(self, text):
+        self.text = text
+        self.stats = {}
+
+    def _update_progress(self, scan_id, phase, detail, pct):
+        if not scan_id:
+            return
+        with _writer_lock:
+            if scan_id in _writer_progress:
+                _writer_progress[scan_id].update({'phase': phase, 'phase_detail': detail, 'percent': int(pct)})
+
+    def _count_syllables(self, word):
+        """Heuristic syllable count for readability scoring."""
+        word = word.lower().strip('.,!?;:"\'-()[]')
+        if len(word) <= 2:
+            return 1
+        vowels = 'aeiouy'
+        count = 0
+        prev_vowel = False
+        for ch in word:
+            is_v = ch in vowels
+            if is_v and not prev_vowel:
+                count += 1
+            prev_vowel = is_v
+        if word.endswith('e') and count > 1:
+            count -= 1
+        if word.endswith('le') and len(word) > 2 and word[-3] not in vowels:
+            count += 1
+        return max(1, count)
+
+    def analyze(self, scan_id=None):
+        import re
+        self._re = re
+        self._update_progress(scan_id, 'analyzing', 'Counting words and sentences...', 5)
+        self._extract_basic_stats()
+
+        self._update_progress(scan_id, 'analyzing', 'Analyzing clarity...', 15)
+        clarity = self._score_clarity()
+
+        self._update_progress(scan_id, 'analyzing', 'Analyzing engagement...', 30)
+        engagement = self._score_engagement()
+
+        self._update_progress(scan_id, 'analyzing', 'Analyzing structure...', 45)
+        structure = self._score_structure()
+
+        self._update_progress(scan_id, 'analyzing', 'Analyzing word choice...', 60)
+        word_choice = self._score_word_choice()
+
+        self._update_progress(scan_id, 'analyzing', 'Analyzing grammar & style...', 75)
+        grammar = self._score_grammar_style()
+
+        self._update_progress(scan_id, 'analyzing', 'Analyzing persuasion...', 90)
+        persuasion = self._score_persuasion()
+
+        weights = {'clarity': 0.20, 'engagement': 0.15, 'structure': 0.20,
+                   'word_choice': 0.15, 'grammar': 0.15, 'persuasion': 0.15}
+        categories = {'clarity': clarity, 'engagement': engagement, 'structure': structure,
+                      'word_choice': word_choice, 'grammar': grammar, 'persuasion': persuasion}
+        overall = int(sum(categories[k]['score'] * weights[k] for k in weights))
+        overall = max(0, min(100, overall))
+        grade = 'A' if overall >= 85 else 'B' if overall >= 70 else 'C' if overall >= 50 else 'D' if overall >= 30 else 'F'
+
+        self._update_progress(scan_id, 'done', 'Analysis complete', 100)
+        return {'stats': self.stats, 'categories': categories, 'overall_score': overall, 'overall_grade': grade}
+
+    def _extract_basic_stats(self):
+        re = self._re
+        text = self.text
+        paragraphs = [p.strip() for p in re.split(r'\n\s*\n', text) if p.strip()]
+        sentences = [s.strip() for s in re.split(r'[.!?]+', text) if len(s.strip()) > 2]
+        words = text.split()
+        self.stats['word_count'] = len(words)
+        self.stats['sentence_count'] = max(len(sentences), 1)
+        self.stats['paragraph_count'] = max(len(paragraphs), 1)
+        self.stats['avg_sentence_length'] = round(len(words) / max(len(sentences), 1), 1)
+        self.stats['avg_paragraph_length'] = round(len(words) / max(len(paragraphs), 1), 1)
+        self.stats['reading_time_min'] = round(len(words) / 238, 1)
+        self._words = words
+        self._sentences = sentences
+        self._paragraphs = paragraphs
+        self._text_lower = text.lower()
+
+    def _score_clarity(self):
+        re = self._re
+        strengths, improvements = [], []
+        words = self._words
+        sentences = self._sentences
+        wc = len(words)
+        sc = len(sentences)
+
+        # Sentence length variety
+        if sc >= 3:
+            lengths = [len(s.split()) for s in sentences]
+            avg = sum(lengths) / len(lengths)
+            var = sum((l - avg) ** 2 for l in lengths) / len(lengths)
+            has_short = any(l <= 5 for l in lengths)
+            has_long = any(l >= 20 for l in lengths)
+            if var > 25 and has_short and has_long:
+                variety_score = 95
+                strengths.append('Excellent sentence variety — mixes short punchy lines with longer detailed ones')
+            elif var > 12:
+                variety_score = 80
+                strengths.append('Good sentence length variety — keeps the reader engaged')
+            elif var > 5:
+                variety_score = 60
+                improvements.append('Add more sentence variety — mix short (3-5 word) sentences with longer ones to create rhythm')
+            else:
+                variety_score = 35
+                improvements.append('Monotonous sentence lengths — your sentences are all similar length. Mix in short, punchy lines between longer explanations')
+        else:
+            variety_score = 50
+
+        # Readability (simplified Flesch)
+        total_syllables = sum(self._count_syllables(w) for w in words) if wc > 0 else 0
+        avg_syl = total_syllables / max(wc, 1)
+        avg_wps = wc / max(sc, 1)
+        flesch = 206.835 - 1.015 * avg_wps - 84.6 * avg_syl
+        flesch = max(0, min(100, flesch))
+        if flesch >= 70:
+            read_score = 90
+            strengths.append(f'Very readable (Flesch score: {flesch:.0f}) — easy to follow and understand')
+        elif flesch >= 50:
+            read_score = 70
+            strengths.append(f'Good readability (Flesch score: {flesch:.0f})')
+        elif flesch >= 30:
+            read_score = 45
+            improvements.append(f'Readability is moderate (Flesch: {flesch:.0f}) — try shorter sentences and simpler words for broader appeal')
+        else:
+            read_score = 25
+            improvements.append(f'Difficult to read (Flesch: {flesch:.0f}) — use shorter sentences, simpler vocabulary, and break up complex ideas')
+
+        # Passive voice detection
+        passive_patterns = [r'\b(?:is|are|was|were|been|being|be)\s+\w+(?:ed|en|t)\b']
+        passive_count = sum(len(re.findall(p, self._text_lower)) for p in passive_patterns)
+        passive_pct = passive_count / max(sc, 1) * 100
+        if passive_pct <= 10:
+            passive_score = 90
+            strengths.append('Strong active voice usage — writing feels direct and confident')
+        elif passive_pct <= 20:
+            passive_score = 65
+            improvements.append(f'Some passive voice detected (~{passive_pct:.0f}% of sentences) — rewrite "was done by" as "X did" for more impact')
+        else:
+            passive_score = 35
+            improvements.append(f'Heavy passive voice ({passive_pct:.0f}%) — passive writing feels weak and indirect. Change "The report was written by John" to "John wrote the report"')
+
+        # Jargon/buzzwords
+        jargon = ['synergy','leverage','paradigm','holistic','streamline','optimize','utilize',
+                  'innovative','disruptive','scalable','actionable','bandwidth','circle back',
+                  'deep dive','move the needle','low-hanging fruit','take offline','ecosystem']
+        found_jargon = [j for j in jargon if j in self._text_lower]
+        if not found_jargon:
+            jargon_score = 90
+            if wc > 40:
+                strengths.append('No buzzword jargon — clear, honest language')
+        elif len(found_jargon) <= 2:
+            jargon_score = 65
+            improvements.append(f'Mild jargon detected ({", ".join(found_jargon)}) — replace with plain language for clearer communication')
+        else:
+            jargon_score = 30
+            improvements.append(f'Heavy jargon ({", ".join(found_jargon[:4])}) — buzzwords make writing feel corporate and hollow. Use plain language instead')
+
+        score = int(variety_score * 0.3 + read_score * 0.35 + passive_score * 0.2 + jargon_score * 0.15)
+        return {'score': max(0, min(100, score)), 'name': 'Clarity', 'icon': '&#128269;', 'strengths': strengths, 'improvements': improvements}
+
+    def _score_engagement(self):
+        re = self._re
+        strengths, improvements = [], []
+        wc = len(self._words)
+        text_lower = self._text_lower
+        sentences = self._sentences
+
+        # Hook strength — first sentence
+        hook_score = 0
+        if sentences:
+            first = sentences[0].lower()
+            checks = {
+                'question': first.strip().endswith('?') or any(first.startswith(q) for q in ['how ','why ','what ','did ','have you','do you','can you']),
+                'you_address': first.startswith('you ') or first.startswith('your '),
+                'bold_claim': any(b in first for b in ['never','always','best','worst','only','most','secret','nobody']),
+                'story': any(first.startswith(s) for s in ['i was ','one day','imagine ','picture this','so i','when i']),
+                'number': bool(re.match(r'^\d+\s', first.strip())),
+            }
+            active = sum(1 for v in checks.values() if v)
+            if active >= 2:
+                hook_score = 95
+                strengths.append('Powerful opening hook — multiple techniques grab the reader immediately')
+            elif active == 1:
+                hook_score = 70
+                strengths.append('Good opening hook — draws the reader in')
+            else:
+                hook_score = 25
+                improvements.append('Weak opening — start with a question, a bold claim, a "you" statement, or a story to hook the reader in the first sentence')
+
+        # Power words
+        power_words = ['amazing','incredible','shocking','powerful','essential','proven','guaranteed',
+                      'exclusive','discover','transform','breakthrough','secret','hidden','truth',
+                      'critical','urgent','warning','free','instant','massive','deadly','genius']
+        found_power = [pw for pw in power_words if pw in text_lower]
+        if len(found_power) >= 4:
+            power_score = 95
+            strengths.append(f'Strong emotional language ({", ".join(found_power[:3])}) — grabs and holds attention')
+        elif len(found_power) >= 2:
+            power_score = 70
+            strengths.append(f'Good use of power words ({", ".join(found_power[:3])})')
+        elif wc > 40:
+            power_score = 30
+            improvements.append('Add power words — "incredible", "proven", "secret", "discover" trigger emotional responses that keep readers engaged')
+        else:
+            power_score = 50
+
+        # Questions
+        q_count = self.text.count('?')
+        if q_count >= 3:
+            q_score = 90
+            strengths.append(f'Excellent use of questions ({q_count}) — engages the reader as a conversation')
+        elif q_count >= 1:
+            q_score = 65
+        else:
+            q_score = 30
+            if wc > 40:
+                improvements.append('No questions — asking the reader questions creates engagement and makes them think. Add "Have you ever...?" or "What if...?"')
+
+        # Emotional language
+        emo_pos = {'love','great','amazing','awesome','beautiful','happy','excited','wonderful','fantastic','proud','inspiring','brilliant'}
+        emo_neg = {'hate','terrible','awful','sad','angry','scary','frustrated','painful','struggle','devastating','heartbreaking','shocking'}
+        emo_count = sum(1 for w in self._words if w.lower().strip('.,!?') in emo_pos | emo_neg)
+        emo_ratio = emo_count / max(wc, 1)
+        if emo_ratio >= 0.04:
+            emo_score = 90
+            strengths.append('Rich emotional language — makes the reader feel something')
+        elif emo_ratio >= 0.02:
+            emo_score = 65
+        elif wc > 40:
+            emo_score = 30
+            improvements.append('Emotionally flat — add feeling words. Share how something felt, what it meant, what it changed. Emotion is what makes writing memorable')
+        else:
+            emo_score = 50
+
+        # Storytelling elements
+        story_markers = ['then','because','when i','one day','imagine','remember','once','suddenly',
+                        'that\'s when','but then','little did','turns out','never expected','at first']
+        story_count = sum(1 for sm in story_markers if sm in text_lower)
+        if story_count >= 4:
+            story_score = 90
+            strengths.append('Strong storytelling elements — narrative markers pull the reader through')
+        elif story_count >= 2:
+            story_score = 65
+            strengths.append('Some narrative elements present')
+        elif wc > 50:
+            story_score = 25
+            improvements.append('No storytelling — even non-fiction benefits from narrative elements. Use "then", "but", "because", "imagine" to create a story flow')
+        else:
+            story_score = 50
+
+        score = int(hook_score * 0.3 + power_score * 0.15 + q_score * 0.15 + emo_score * 0.2 + story_score * 0.2)
+        return {'score': max(0, min(100, score)), 'name': 'Engagement', 'icon': '&#128293;', 'strengths': strengths, 'improvements': improvements}
+
+    def _score_structure(self):
+        strengths, improvements = [], []
+        paragraphs = self._paragraphs
+        pc = len(paragraphs)
+        wc = len(self._words)
+
+        # Intro/body/conclusion
+        if pc >= 3:
+            intro_len = len(paragraphs[0].split())
+            conclusion_len = len(paragraphs[-1].split())
+            body_lens = [len(p.split()) for p in paragraphs[1:-1]]
+            has_intro = intro_len >= 10
+            has_conclusion = conclusion_len >= 10
+            if has_intro and has_conclusion:
+                struct_score = 90
+                strengths.append('Clear intro/body/conclusion structure — well organized')
+            elif has_intro or has_conclusion:
+                struct_score = 60
+                if not has_intro:
+                    improvements.append('Weak introduction — your opening paragraph is too short. Set the scene and tell the reader what to expect')
+                if not has_conclusion:
+                    improvements.append('Weak conclusion — your closing paragraph is too short. Summarize key points or end with a strong takeaway')
+            else:
+                struct_score = 35
+                improvements.append('No clear intro or conclusion — start with a paragraph that sets context, end with one that wraps up your message')
+        elif pc == 1 and wc > 80:
+            struct_score = 20
+            improvements.append('Single wall of text — break your writing into paragraphs (intro, body sections, conclusion) for readability. No one wants to read a single block')
+        else:
+            struct_score = 50
+
+        # Paragraph length balance
+        if pc >= 3:
+            p_lens = [len(p.split()) for p in paragraphs]
+            avg_p = sum(p_lens) / len(p_lens)
+            long_paras = sum(1 for l in p_lens if l > 150)
+            short_paras = sum(1 for l in p_lens if l < 15 and l > 0)
+            if long_paras == 0 and avg_p < 100:
+                balance_score = 85
+                strengths.append('Good paragraph lengths — easy to scan and digest')
+            elif long_paras >= 2:
+                balance_score = 35
+                improvements.append(f'{long_paras} paragraphs are over 150 words — break them up. Shorter paragraphs (50-100 words) are easier to read and create visual breathing room')
+            else:
+                balance_score = 60
+        else:
+            balance_score = 50
+
+        # Transition words
+        transitions = ['however','moreover','furthermore','additionally','therefore','consequently',
+                       'in addition','on the other hand','for example','for instance','in contrast',
+                       'as a result','in conclusion','first','second','third','finally','meanwhile',
+                       'nevertheless','although','despite','similarly','likewise','specifically',
+                       'in fact','that said','in other words','to summarize','above all','notably']
+        found_trans = sum(1 for t in transitions if t in self._text_lower)
+        trans_per_para = found_trans / max(pc, 1)
+        if trans_per_para >= 1.5:
+            trans_score = 90
+            strengths.append(f'Excellent use of transitions ({found_trans} found) — ideas flow logically from one to the next')
+        elif trans_per_para >= 0.8:
+            trans_score = 70
+            strengths.append('Good transition usage — helps guide the reader')
+        elif wc > 80:
+            trans_score = 30
+            improvements.append('Few transition words — add "however", "therefore", "for example", "in addition" to connect ideas and improve flow')
+        else:
+            trans_score = 50
+
+        score = int(struct_score * 0.4 + balance_score * 0.25 + trans_score * 0.35)
+        return {'score': max(0, min(100, score)), 'name': 'Structure', 'icon': '&#127959;', 'strengths': strengths, 'improvements': improvements}
+
+    def _score_word_choice(self):
+        re = self._re
+        strengths, improvements = [], []
+        words = self._words
+        wc = len(words)
+        text_lower = self._text_lower
+
+        # Vocabulary richness
+        clean_words = [w.lower().strip('.,!?;:"\'-()[]') for w in words if len(w) > 2]
+        unique = len(set(clean_words))
+        total = max(len(clean_words), 1)
+        ratio = unique / total
+        # Adjust for text length (longer texts naturally have lower ratios)
+        adjusted = ratio + min(0.15, wc / 5000 * 0.15) if wc > 100 else ratio
+        if adjusted >= 0.65:
+            vocab_score = 90
+            strengths.append(f'Rich vocabulary — {unique} unique words shows diverse, expressive language')
+        elif adjusted >= 0.50:
+            vocab_score = 70
+            strengths.append('Good vocabulary variety')
+        elif adjusted >= 0.35:
+            vocab_score = 45
+            improvements.append(f'Limited vocabulary ({unique} unique words from {total}) — use a thesaurus to find stronger, more specific alternatives')
+        else:
+            vocab_score = 25
+            improvements.append('Very repetitive vocabulary — your writing reuses the same words heavily. Each sentence should try to express ideas with fresh language')
+
+        # Repetition
+        stopwords = {'the','a','an','is','it','in','to','of','and','or','for','on','at','by','i','we','you','he','she','they','this','that','my','your','with','from','was','be','are','has','have','had','do','did','but','not','so','if','as','can','will','just','its','me','our','up','out','no','all','been','about','would','could','should','what','when','how','more','some','them','than','also','then','very','there','too','only'}
+        freq = {}
+        for w in clean_words:
+            if w not in stopwords and len(w) > 3:
+                freq[w] = freq.get(w, 0) + 1
+        top = sorted(freq.items(), key=lambda x: -x[1])[:5]
+        if top and top[0][1] >= wc * 0.04 and wc > 50:
+            rep_score = 35
+            improvements.append(f'Word "{top[0][0]}" repeats {top[0][1]} times — find alternatives or restructure sentences to avoid repetition')
+        elif top and top[0][1] >= wc * 0.025 and wc > 80:
+            rep_score = 55
+            improvements.append(f'Mild repetition: "{top[0][0]}" appears {top[0][1]} times — vary your phrasing')
+        else:
+            rep_score = 85
+            if wc > 30:
+                strengths.append('Minimal word repetition — writing feels fresh throughout')
+
+        # Clichés
+        cliches = ['at the end of the day','think outside the box','low-hanging fruit','game changer',
+                  'take it to the next level','it is what it is','hit the ground running','win-win',
+                  'push the envelope','break the mold','move the needle','best of both worlds',
+                  'food for thought','easier said than done','to be honest','at this point in time',
+                  'each and every','first and foremost','last but not least','needless to say',
+                  'the fact of the matter','when all is said and done','in this day and age']
+        found_cliches = [c for c in cliches if c in text_lower]
+        if not found_cliches:
+            cliche_score = 90
+            if wc > 50:
+                strengths.append('Cliché-free writing — original expression shows authentic voice')
+        elif len(found_cliches) == 1:
+            cliche_score = 60
+            improvements.append(f'Cliché detected: "{found_cliches[0]}" — replace with a fresh, specific expression')
+        else:
+            cliche_score = 30
+            improvements.append(f'Multiple clichés ({", ".join(found_cliches[:3])}) — these make writing feel generic. Replace each with something original and specific')
+
+        # Weak/vague words
+        weak = {'very':0,'really':0,'things':0,'stuff':0,'quite':0,'somewhat':0,'basically':0,
+                'actually':0,'just':0,'got':0,'nice':0,'good':0,'bad':0,'interesting':0,'pretty':0}
+        for w in clean_words:
+            if w in weak:
+                weak[w] += 1
+        weak_total = sum(weak.values())
+        top_weak = sorted([(k,v) for k,v in weak.items() if v > 0], key=lambda x: -x[1])[:3]
+        if weak_total <= 2:
+            weak_score = 90
+            if wc > 30:
+                strengths.append('Strong, specific word choices — avoids vague fillers like "very" and "things"')
+        elif weak_total <= 5:
+            weak_score = 60
+            examples = ', '.join(f'"{w}" ({c}x)' for w,c in top_weak)
+            improvements.append(f'Weak words detected: {examples} — replace "very big" with "enormous", "really good" with "excellent", "things" with specifics')
+        else:
+            weak_score = 30
+            examples = ', '.join(f'"{w}" ({c}x)' for w,c in top_weak)
+            improvements.append(f'Too many vague words ({weak_total} total): {examples} — each "very/really/things" is a missed opportunity for a precise, powerful word')
+
+        score = int(vocab_score * 0.3 + rep_score * 0.25 + cliche_score * 0.2 + weak_score * 0.25)
+        return {'score': max(0, min(100, score)), 'name': 'Word Choice', 'icon': '&#128218;', 'strengths': strengths, 'improvements': improvements}
+
+    def _score_grammar_style(self):
+        re = self._re
+        strengths, improvements = [], []
+        wc = len(self._words)
+        text_lower = self._text_lower
+        sentences = self._sentences
+
+        # Filler words
+        fillers = ['basically','literally','actually','sort of','kind of','i mean','you know',
+                  'honestly','obviously','clearly','in terms of','at the end of the day']
+        filler_count = sum(text_lower.count(f) for f in fillers)
+        if filler_count == 0:
+            filler_score = 90
+            if wc > 30:
+                strengths.append('No filler words — writing is clean and direct')
+        elif filler_count <= 3:
+            filler_score = 65
+            improvements.append(f'Minor filler words detected ({filler_count}) — remove "basically", "literally", "actually" for tighter prose')
+        else:
+            filler_score = 30
+            improvements.append(f'Heavy filler word usage ({filler_count} instances) — these add nothing and dilute your message. Cut them all')
+
+        # Redundant phrases
+        redundants = {'past history':'history','free gift':'gift','advance planning':'planning',
+                     'end result':'result','final outcome':'outcome','added bonus':'bonus',
+                     'completely eliminate':'eliminate','basic fundamentals':'fundamentals',
+                     'close proximity':'proximity','each and every':'each/every',
+                     'future plans':'plans','general consensus':'consensus',
+                     'mutual cooperation':'cooperation','personal opinion':'opinion',
+                     'revert back':'revert','still remains':'remains','totally unique':'unique',
+                     'unexpected surprise':'surprise','very unique':'unique'}
+        found_redundant = [(k,v) for k,v in redundants.items() if k in text_lower]
+        if not found_redundant:
+            redundant_score = 90
+            if wc > 40:
+                strengths.append('No redundant phrases — writing is tight and efficient')
+        elif len(found_redundant) <= 2:
+            redundant_score = 55
+            examples = ', '.join(f'"{k}" → just "{v}"' for k,v in found_redundant)
+            improvements.append(f'Redundant phrases: {examples}')
+        else:
+            redundant_score = 30
+            examples = ', '.join(f'"{k}" → "{v}"' for k,v in found_redundant[:3])
+            improvements.append(f'Multiple redundancies: {examples} — trim the fat for sharper writing')
+
+        # Adverb overuse
+        adverb_count = len(re.findall(r'\b\w+ly\b', text_lower))
+        adverb_pct = adverb_count / max(wc, 1) * 100
+        if adverb_pct <= 2:
+            adverb_score = 85
+            strengths.append('Lean writing — not overloaded with adverbs')
+        elif adverb_pct <= 4:
+            adverb_score = 60
+            improvements.append(f'Moderate adverb usage ({adverb_count} -ly words, {adverb_pct:.1f}%) — replace "ran quickly" with "sprinted", show don\'t tell')
+        else:
+            adverb_score = 30
+            improvements.append(f'Adverb overload ({adverb_count} -ly words, {adverb_pct:.1f}%) — Stephen King: "The road to hell is paved with adverbs." Use stronger verbs instead')
+
+        # Sentence start variety
+        if len(sentences) >= 5:
+            starts = [s.strip().split()[0].lower() if s.strip().split() else '' for s in sentences]
+            start_freq = {}
+            for s in starts:
+                start_freq[s] = start_freq.get(s, 0) + 1
+            top_start = max(start_freq.values()) if start_freq else 0
+            start_pct = top_start / len(starts) * 100
+            if start_pct <= 20:
+                start_score = 90
+                strengths.append('Varied sentence openings — keeps the rhythm interesting')
+            elif start_pct <= 35:
+                start_score = 60
+                most_common = max(start_freq, key=start_freq.get)
+                improvements.append(f'{top_start} of {len(starts)} sentences start with "{most_common}" — vary your openings to avoid monotony')
+            else:
+                start_score = 30
+                most_common = max(start_freq, key=start_freq.get)
+                improvements.append(f'{start_pct:.0f}% of sentences start with "{most_common}" — this creates a repetitive, list-like feel. Restructure for variety')
+        else:
+            start_score = 50
+
+        score = int(filler_score * 0.25 + redundant_score * 0.25 + adverb_score * 0.25 + start_score * 0.25)
+        return {'score': max(0, min(100, score)), 'name': 'Grammar & Style', 'icon': '&#9999;', 'strengths': strengths, 'improvements': improvements}
+
+    def _score_persuasion(self):
+        re = self._re
+        strengths, improvements = [], []
+        wc = len(self._words)
+        text_lower = self._text_lower
+
+        # Evidence/data
+        numbers = len(re.findall(r'\b\d+(?:\.\d+)?%?\b', self.text))
+        citations = sum(1 for p in ['study','research','according to','data','evidence','survey','report','statistics','published','found that'] if p in text_lower)
+        evidence_total = numbers + citations
+        if evidence_total >= 5:
+            evidence_score = 90
+            strengths.append(f'Strong evidence usage ({numbers} data points, {citations} references) — builds credibility')
+        elif evidence_total >= 2:
+            evidence_score = 65
+            strengths.append('Some supporting evidence present')
+        elif wc > 50:
+            evidence_score = 25
+            improvements.append('No data or evidence — add statistics, research references, or specific numbers to support your claims. "Sales increased 47%" hits harder than "sales went up"')
+        else:
+            evidence_score = 50
+
+        # Call-to-action
+        cta_words = ['try','consider','start','join','learn','discover','imagine','think about',
+                    'ask yourself','take','remember','don\'t forget','make sure','keep in mind']
+        found_cta = sum(1 for c in cta_words if c in text_lower)
+        if found_cta >= 3:
+            cta_score = 90
+            strengths.append('Strong calls-to-action — actively directs the reader')
+        elif found_cta >= 1:
+            cta_score = 60
+        elif wc > 50:
+            cta_score = 25
+            improvements.append('No call-to-action — tell the reader what to do next. "Try this...", "Consider...", "Start by..." transforms passive reading into action')
+        else:
+            cta_score = 50
+
+        # Authority markers
+        authority = ['expert','proven','research','study','evidence','according','published',
+                    'professional','official','certified','documented','peer-reviewed','clinical']
+        auth_count = sum(1 for a in authority if a in text_lower)
+        if auth_count >= 3:
+            auth_score = 85
+            strengths.append('Establishes authority — references expertise and evidence')
+        elif auth_count >= 1:
+            auth_score = 60
+        elif wc > 60:
+            auth_score = 30
+            improvements.append('No authority signals — reference studies, expert opinions, or credentials to boost trust. "Research shows..." is more persuasive than "I think..."')
+        else:
+            auth_score = 50
+
+        # Specificity
+        has_numbers = numbers >= 3
+        has_names = len(re.findall(r'\b[A-Z][a-z]{2,}\b', self.text)) >= 3
+        has_quotes = '"' in self.text
+        specifics = sum([has_numbers, has_names, has_quotes])
+        if specifics >= 2:
+            spec_score = 90
+            strengths.append('High specificity — names, numbers, and details make your writing concrete and trustworthy')
+        elif specifics >= 1:
+            spec_score = 60
+        elif wc > 50:
+            spec_score = 25
+            improvements.append('Too vague — replace generalizations with specifics. "Many people" → "73% of users", "a company" → "Netflix", "recently" → "in March 2024"')
+        else:
+            spec_score = 50
+
+        # Audience address
+        you_count = text_lower.count(' you ') + text_lower.count('you\'re') + text_lower.count('your ') + text_lower.count('you\'ll')
+        you_ratio = you_count / max(wc / 100, 1)
+        if you_ratio >= 4:
+            you_score = 90
+            strengths.append('Deeply reader-focused — speaks directly to "you" throughout')
+        elif you_ratio >= 2:
+            you_score = 70
+            strengths.append('Good audience address — uses "you" to engage the reader')
+        elif wc > 40:
+            you_score = 30
+            improvements.append('Not addressing the reader — use "you" and "your" more. "You might notice..." is far more engaging than "One might notice..."')
+        else:
+            you_score = 50
+
+        score = int(evidence_score * 0.25 + cta_score * 0.15 + auth_score * 0.15 + spec_score * 0.25 + you_score * 0.20)
+        return {'score': max(0, min(100, score)), 'name': 'Persuasion', 'icon': '&#128226;', 'strengths': strengths, 'improvements': improvements}
+
+
 HTML_PAGE = r'''<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -2555,6 +3182,39 @@ HTML_PAGE = r'''<!DOCTYPE html>
   body.glass .algo-detail { background:rgba(255,255,255,0.35); border-color:rgba(255,255,255,0.5); }
   body.glass .algo-prop { background:rgba(255,255,255,0.35); border-color:rgba(255,255,255,0.5); }
   body.glass .algo-tips li { background:rgba(42,108,182,0.06); border-left-color:#2a6cb6; }
+
+  /* ==================== Writer Tab Styles ==================== */
+  .writer-stats { display:grid; grid-template-columns:repeat(4, 1fr); gap:8px; margin-bottom:20px; }
+  @media (max-width:700px) { .writer-stats { grid-template-columns:repeat(2, 1fr); } }
+  .writer-stat { background:var(--bg-panel); border:1px solid var(--border); border-radius:6px; padding:10px 14px; text-align:center; }
+  .writer-stat .stat-value { color:var(--accent); font-weight:600; font-size:18px; display:block; margin-bottom:2px; }
+  .writer-stat .stat-label { color:var(--text-dimmer); text-transform:uppercase; letter-spacing:1px; font-size:9px; }
+  .writer-overall { text-align:center; margin-bottom:20px; padding:20px; background:var(--bg-panel); border:1px solid var(--border); border-radius:10px; }
+  .writer-overall .overall-label { font-size:12px; color:var(--text-dimmer); text-transform:uppercase; letter-spacing:2px; margin-top:8px; }
+  .writer-overall .overall-score { font-size:28px; font-weight:700; font-family:var(--font); }
+  .writer-categories { display:grid; grid-template-columns:repeat(3, 1fr); gap:14px; margin-bottom:24px; }
+  @media (max-width:700px) { .writer-categories { grid-template-columns:repeat(2, 1fr); } }
+  .writer-cat-card { background:var(--bg-panel); border:1px solid var(--border); border-radius:10px;
+    padding:16px 12px; text-align:center; cursor:pointer; transition:all 0.3s; }
+  .writer-cat-card:hover { border-color:var(--accent); box-shadow:0 0 20px var(--glow-shadow); transform:translateY(-2px); }
+  .writer-cat-card .cat-icon { font-size:22px; margin-bottom:6px; }
+  .writer-cat-card .cat-name { font-size:11px; color:var(--text-dim); text-transform:uppercase; letter-spacing:1px; margin-bottom:10px; }
+  .writer-cat-card .cat-ring { margin:0 auto 8px; }
+  .writer-cat-card .cat-score-num { font-size:24px; font-weight:700; font-family:var(--font); }
+  .writer-cat-card .cat-grade { font-size:13px; font-weight:700; letter-spacing:2px; margin-top:4px; }
+  .writer-textarea { width:100%; min-height:180px; background:var(--bg-panel); color:var(--text); border:1px solid var(--border);
+    border-radius:8px; padding:14px; font-family:var(--font); font-size:13px; line-height:1.6; resize:vertical; outline:none; }
+  .writer-textarea:focus { border-color:var(--accent); box-shadow:0 0 10px var(--glow-shadow); }
+  .writer-textarea::placeholder { color:var(--text-dimmer); }
+  .writer-or-divider { text-align:center; color:var(--text-dimmer); font-size:11px; text-transform:uppercase; letter-spacing:2px; padding:4px 0; }
+  .writer-text-preview { font-size:12px; color:var(--text-dim); line-height:1.7; padding:12px;
+    background:var(--accent-faint); border-radius:6px; max-height:200px; overflow-y:auto; margin-bottom:14px; white-space:pre-wrap; word-wrap:break-word; }
+  body.glass .writer-overall { background:rgba(255,255,255,0.4); border-color:rgba(255,255,255,0.5); }
+  body.glass .writer-cat-card { background:rgba(255,255,255,0.35); border-color:rgba(255,255,255,0.5); }
+  body.glass .writer-cat-card:hover { border-color:#2a6cb6; box-shadow:0 0 15px rgba(42,108,182,0.15); }
+  body.glass .writer-stat { background:rgba(255,255,255,0.35); border-color:rgba(255,255,255,0.5); }
+  body.glass .writer-textarea { background:rgba(255,255,255,0.5); color:#1a2a3a; border-color:rgba(0,0,0,0.12); }
+  body.glass .writer-textarea:focus { border-color:#2a6cb6; box-shadow:0 0 10px rgba(42,108,182,0.2); }
 </style>
 </head>
 <body>
@@ -2583,6 +3243,7 @@ HTML_PAGE = r'''<!DOCTYPE html>
     <button class="mode-tab" onclick="switchMode('text')" id="tabText"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>Text</button>
     <button class="mode-tab" onclick="switchMode('algorithm')" id="tabAlgorithm"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><path d="M12 20V10"/><path d="M18 20V4"/><path d="M6 20v-4"/></svg>Algorithm</button>
     <button class="mode-tab" onclick="switchMode('transcribe')" id="tabTranscribe"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/><path d="M15 5l4 4"/></svg>Transcribe</button>
+    <button class="mode-tab" onclick="switchMode('writer')" id="tabWriter"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>Writer</button>
   </div>
 
   <div class="mode-panel active" id="panelImage">
@@ -2924,6 +3585,67 @@ HTML_PAGE = r'''<!DOCTYPE html>
       </div>
     </div>
   </div><!-- /panelAlgorithm -->
+
+  <div class="mode-panel" id="panelWriter">
+    <div class="controls">
+      <div style="flex:1;min-width:280px;display:flex;flex-direction:column;gap:10px">
+        <textarea class="writer-textarea" id="writerTextarea" placeholder="> Paste or type your text here for analysis..."></textarea>
+        <div class="writer-or-divider">-- or upload a file --</div>
+        <div class="upload-zone" id="writerDropZone" style="padding:20px" onclick="if(!writerUploadedFile) document.getElementById('writerFileInput').click()">
+          <input type="file" id="writerFileInput" hidden accept=".txt,.md,.doc,.docx,.pdf" onchange="if(this.files.length) handleWriterFile(this.files[0])">
+          <div class="upload-icon" id="writerUploadIcon">
+            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="opacity:0.5">
+              <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/>
+              <polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>
+            </svg>
+          </div>
+          <p class="upload-text" id="writerUploadText">> Drop text file here or click to browse _</p>
+          <p class="upload-hint" id="writerUploadHint">TXT, MD, DOCX, PDF</p>
+        </div>
+      </div>
+      <div class="settings" id="writerControls">
+        <label>> Writing Analyzer</label>
+        <p style="color:var(--text-dim);font-size:12px;line-height:1.6;margin-bottom:15px">
+          Analyzes your writing across 6 dimensions: clarity, engagement, structure, word choice, grammar & style, and persuasion.<br><br>
+          Get a detailed score with specific strengths and improvement suggestions for each category.
+        </p>
+        <button class="scan-btn" id="writerScanBtn" onclick="startWriter()" disabled>[ Analyze Writing ]</button>
+      </div>
+    </div>
+    <div class="results" id="writerResults">
+      <div style="margin-bottom:10px;">
+        <button class="history-toggle" id="writerHistoryToggle" onclick="toggleScanHistory('writer')">
+          > Writing History [ Click to expand ]
+        </button>
+        <div id="writerHistoryPanel" hidden>
+          <div class="history-controls" id="writerHistoryControls" hidden>
+            <button class="history-clear-btn" onclick="clearScanHistory('writer')">[ Clear History ]</button>
+            <span style="color:var(--text-dimmer);font-size:11px;" id="writerHistoryCount"></span>
+          </div>
+          <div id="writerHistoryList"></div>
+        </div>
+      </div>
+      <div class="status-line" id="writerStatus" style="display:none">
+        <span class="spinner" id="writerSpinner"></span>
+        <span id="writerStatusText">Analyzing...</span>
+        <span id="writerTimerDisplay" style="margin-left:auto;font-size:11px;color:var(--text-dimmer)"></span>
+      </div>
+      <div class="progress-bar" id="writerProgressBar" style="display:none">
+        <div class="progress-fill" id="writerProgressFill" style="width:0%"></div>
+      </div>
+      <div id="writerResultsContent">
+        <div class="empty-state" id="writerEmpty">
+          <div class="icon">
+            <svg width="60" height="60" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" style="opacity:0.3">
+              <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/>
+              <path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/>
+            </svg>
+          </div>
+          <p>> paste text or upload a file to analyze your writing _</p>
+        </div>
+      </div>
+    </div>
+  </div><!-- /panelWriter -->
 
 </div>
 </div>
@@ -3645,7 +4367,7 @@ let audioScanStart = 0;
 
 function startAudioTimer(panel) {
   audioScanStart = performance.now();
-  const elId = panel === 'text' ? 'textTimerDisplay' : panel === 'transcribe' ? 'transcribeTimerDisplay' : panel === 'algorithm' ? 'algorithmTimerDisplay' : 'audioTimerDisplay';
+  const elId = panel === 'text' ? 'textTimerDisplay' : panel === 'transcribe' ? 'transcribeTimerDisplay' : panel === 'algorithm' ? 'algorithmTimerDisplay' : panel === 'writer' ? 'writerTimerDisplay' : 'audioTimerDisplay';
   const el = document.getElementById(elId);
   function tick() {
     const s = (performance.now() - audioScanStart) / 1000;
@@ -4050,13 +4772,13 @@ function downloadTranscript(format) {
 }
 
 // ==================== SCAN HISTORY (text/audio/transcribe) ====================
-const scanHistoryOpen = {text: false, audio: false, transcribe: false, algorithm: false};
+const scanHistoryOpen = {text: false, audio: false, transcribe: false, algorithm: false, writer: false};
 
 async function toggleScanHistory(type) {
   const panel = document.getElementById(type + 'HistoryPanel');
   const btn = document.getElementById(type + 'HistoryToggle');
   scanHistoryOpen[type] = !scanHistoryOpen[type];
-  const histLabel = type === 'algorithm' ? 'Analysis History' : 'Scan History';
+  const histLabel = type === 'algorithm' ? 'Analysis History' : type === 'writer' ? 'Writing History' : 'Scan History';
   if (scanHistoryOpen[type]) {
     panel.hidden = false;
     btn.innerHTML = '> ' + histLabel + ' [ Click to collapse ]';
@@ -4098,6 +4820,23 @@ async function loadScanHistory(type) {
           html += '<span style="padding:2px 8px;border:1px solid var(--border);border-radius:10px;font-size:10px;letter-spacing:0.5px" class="' + gc + '">' + sc.name + ' ' + sc.score + '</span>';
         }
         html += '</div>';
+      } else if (type === 'writer' && item.overall_score !== undefined) {
+        html += '<div style="font-size:11px;color:var(--text-dimmer);margin-top:4px;">';
+        html += item.date + ' &bull; ' + (item.word_count || '?') + ' words &bull; ' + (item.elapsed || '?') + 's';
+        html += '</div>';
+        const gw = 'grade-' + (item.overall_grade||'c').toLowerCase();
+        html += '<div style="font-size:11px;margin-top:6px;display:flex;flex-wrap:wrap;gap:6px;align-items:center">';
+        html += '<span style="padding:2px 10px;border:1px solid var(--border);border-radius:10px;font-size:11px;font-weight:bold;letter-spacing:0.5px" class="' + gw + '">Overall ' + item.overall_score + '</span>';
+        if (item.categories) {
+          for (const cat of item.categories) {
+            const gc2 = 'grade-' + (cat.grade||'c').toLowerCase();
+            html += '<span style="padding:2px 8px;border:1px solid var(--border);border-radius:10px;font-size:10px;letter-spacing:0.5px" class="' + gc2 + '">' + cat.name + ' ' + cat.score + '</span>';
+          }
+        }
+        html += '</div>';
+        if (item.text_preview) {
+          html += '<div style="font-size:10px;color:var(--text-dimmer);margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + escapeHtml(item.text_preview) + '</div>';
+        }
       } else {
         const dur = item.duration ? fmtTime(item.duration) : '??';
         const lang = item.language ? item.language.toUpperCase() : '';
@@ -4618,6 +5357,194 @@ function renderAlgorithmResults(data) {
     }
   } catch(e) {}
 })();
+
+/* ───── WRITER TAB JS ───── */
+let writerUploadedFile = null;
+let writerScanId = null;
+
+// Drag & drop setup for writer
+(function setupWriterDrop() {
+  document.addEventListener('DOMContentLoaded', function() {
+    const zone = document.getElementById('writerDropZone');
+    if (!zone) return;
+    zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('drag-over'); });
+    zone.addEventListener('dragleave', () => zone.classList.remove('drag-over'));
+    zone.addEventListener('drop', e => {
+      e.preventDefault(); zone.classList.remove('drag-over');
+      if (e.dataTransfer.files.length) handleWriterFile(e.dataTransfer.files[0]);
+    });
+  });
+})();
+
+function handleWriterFile(file) {
+  const allowed = ['.txt', '.md', '.docx', '.pdf'];
+  const ext = '.' + file.name.split('.').pop().toLowerCase();
+  if (!allowed.includes(ext)) {
+    alert('Unsupported file type. Please upload .txt, .md, .docx, or .pdf');
+    return;
+  }
+  if (file.size > 10 * 1024 * 1024) {
+    alert('File too large. Maximum 10MB.');
+    return;
+  }
+  writerUploadedFile = file;
+  const zone = document.getElementById('writerDropZone');
+  zone.innerHTML = '<div style="display:flex;align-items:center;gap:10px;justify-content:center"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg><span style="color:var(--accent);font-size:13px;font-weight:bold;">' + escapeHtml(file.name) + '</span><span style="color:var(--text-dimmer);font-size:11px;">(' + (file.size / 1024).toFixed(1) + ' KB)</span><span onclick="clearWriterFile(event)" style="cursor:pointer;color:var(--error);font-size:16px;margin-left:8px;" title="Remove file">&times;</span></div>';
+  document.getElementById('writerScanBtn').disabled = false;
+}
+
+function clearWriterFile(e) {
+  if (e) e.stopPropagation();
+  writerUploadedFile = null;
+  const zone = document.getElementById('writerDropZone');
+  zone.innerHTML = '<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="var(--accent-dim)" stroke-width="1.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><polyline points="9 15 12 12 15 15"/></svg><div style="font-size:13px;color:var(--text-dim);">Drop a file here or <span style="color:var(--accent);cursor:pointer;text-decoration:underline;" onclick="document.getElementById(\\\'writerFileInput\\\').click()">browse</span></div><div style="font-size:11px;color:var(--text-dimmer);margin-top:4px;">TXT, MD, DOCX, PDF &bull; Max 10MB</div>';
+  const ta = document.getElementById('writerTextarea');
+  if (!ta.value.trim()) document.getElementById('writerScanBtn').disabled = true;
+}
+
+// Enable/disable analyze button based on textarea content
+document.addEventListener('DOMContentLoaded', function() {
+  const ta = document.getElementById('writerTextarea');
+  if (ta) {
+    ta.addEventListener('input', function() {
+      const btn = document.getElementById('writerScanBtn');
+      btn.disabled = !ta.value.trim() && !writerUploadedFile;
+    });
+  }
+});
+
+async function startWriter() {
+  const textarea = document.getElementById('writerTextarea');
+  const text = textarea.value.trim();
+  if (!text && !writerUploadedFile) { alert('Please enter text or upload a file.'); return; }
+
+  // Disable UI
+  document.getElementById('writerScanBtn').disabled = true;
+  document.getElementById('writerStatus').style.display = 'flex';
+  document.getElementById('writerSpinner').style.display = '';
+  document.getElementById('writerProgressBar').style.display = 'block';
+  document.getElementById('writerProgressFill').style.width = '0%';
+  document.getElementById('writerStatusText').textContent = 'Starting analysis...';
+  document.getElementById('writerResultsContent').innerHTML = '';
+
+  startAudioTimer('writer');
+
+  // Build request
+  const formData = new FormData();
+  if (writerUploadedFile) {
+    formData.append('file', writerUploadedFile);
+  } else {
+    formData.append('text', text);
+  }
+
+  try {
+    const resp = await fetch('/writer/analyze', { method: 'POST', body: formData });
+    const start = await resp.json();
+    if (start.error) throw new Error(start.error);
+    writerScanId = start.scan_id;
+
+    // Poll progress
+    const poll = setInterval(async () => {
+      try {
+        const pr = await fetch('/writer/analyze/progress?id=' + writerScanId);
+        const pd = await pr.json();
+        if (pd.error) { clearInterval(poll); throw new Error(pd.error); }
+        document.getElementById('writerStatusText').textContent = pd.phase_detail || pd.phase || 'Analyzing...';
+        document.getElementById('writerProgressFill').style.width = (pd.percent || 0) + '%';
+        if (pd.done) {
+          clearInterval(poll);
+          stopAudioTimer();
+          document.getElementById('writerSpinner').style.display = 'none';
+          document.getElementById('writerProgressFill').style.width = '100%';
+          document.getElementById('writerStatusText').textContent = 'Complete!';
+          document.getElementById('writerScanBtn').disabled = false;
+          renderWriterResults(pd);
+        }
+      } catch (e) {
+        clearInterval(poll);
+        stopAudioTimer();
+        document.getElementById('writerStatusText').textContent = 'Error: ' + e.message;
+        document.getElementById('writerSpinner').style.display = 'none';
+        document.getElementById('writerScanBtn').disabled = false;
+      }
+    }, 600);
+  } catch (e) {
+    stopAudioTimer();
+    document.getElementById('writerStatusText').textContent = 'Error: ' + e.message;
+    document.getElementById('writerSpinner').style.display = 'none';
+    document.getElementById('writerScanBtn').disabled = false;
+  }
+}
+
+function renderWriterResults(data) {
+  const stats = data.stats || {};
+  const categories = data.categories || [];
+  const overall = data.overall_score || 0;
+  const grade = data.overall_grade || 'C';
+  const gc = 'grade-' + grade.toLowerCase();
+
+  let html = '';
+
+  // Stats bar
+  html += '<div class="writer-stats">';
+  html += '<div class="writer-stat"><div class="writer-stat-value">' + (stats.word_count || 0) + '</div><div class="writer-stat-label">Words</div></div>';
+  html += '<div class="writer-stat"><div class="writer-stat-value">' + (stats.sentence_count || 0) + '</div><div class="writer-stat-label">Sentences</div></div>';
+  html += '<div class="writer-stat"><div class="writer-stat-value">' + (stats.paragraph_count || 0) + '</div><div class="writer-stat-label">Paragraphs</div></div>';
+  html += '<div class="writer-stat"><div class="writer-stat-value">' + (stats.reading_time_min || '<1') + 'm</div><div class="writer-stat-label">Read Time</div></div>';
+  html += '</div>';
+
+  // Overall score
+  html += '<div class="writer-overall">';
+  html += '<div>' + renderScoreRing(overall, 80) + '</div>';
+  html += '<div style="font-size:22px;font-weight:bold;color:var(--accent);margin-top:8px;" class="' + gc + '">Grade: ' + grade + '</div>';
+  html += '<div style="font-size:12px;color:var(--text-dimmer);margin-top:4px;">Overall Writing Score</div>';
+  html += '</div>';
+
+  // Category cards
+  html += '<div class="writer-categories">';
+  categories.forEach(cat => {
+    const cg = 'grade-' + (cat.grade||'c').toLowerCase();
+    html += '<div class="writer-cat-card">';
+    html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">';
+    html += '<div style="font-size:14px;font-weight:bold;color:var(--accent);">' + (cat.icon||'') + ' ' + cat.name + '</div>';
+    html += '<div>' + renderScoreRing(cat.score, 44) + '</div>';
+    html += '</div>';
+    html += '<div class="' + cg + '" style="font-size:12px;font-weight:bold;margin-bottom:10px;">Grade: ' + (cat.grade||'C') + '</div>';
+
+    // Strengths
+    if (cat.strengths && cat.strengths.length) {
+      html += '<div class="algo-strengths" style="margin-bottom:8px;">';
+      html += '<div style="font-size:11px;font-weight:bold;margin-bottom:6px;color:#4caf50;">STRENGTHS</div>';
+      cat.strengths.forEach(s => {
+        html += '<div class="algo-tip-item" style="font-size:11px;color:var(--text-dim);margin-bottom:3px;">&#10003; ' + escapeHtml(s) + '</div>';
+      });
+      html += '</div>';
+    }
+
+    // Improvements
+    if (cat.improvements && cat.improvements.length) {
+      html += '<div class="algo-improve">';
+      html += '<div style="font-size:11px;font-weight:bold;margin-bottom:6px;color:#ff9800;">TO IMPROVE</div>';
+      cat.improvements.forEach(imp => {
+        html += '<div class="algo-tip-item" style="font-size:11px;color:var(--text-dim);margin-bottom:3px;">&#9679; ' + escapeHtml(imp) + '</div>';
+      });
+      html += '</div>';
+    }
+
+    html += '</div>';
+  });
+  html += '</div>';
+
+  // Text preview
+  if (data.text_preview) {
+    html += '<div class="writer-text-preview">';
+    html += '<div style="font-size:12px;font-weight:bold;color:var(--accent);margin-bottom:8px;">TEXT PREVIEW</div>';
+    html += '<div style="font-size:12px;color:var(--text-dim);line-height:1.6;white-space:pre-wrap;">' + escapeHtml(data.text_preview) + '</div>';
+    html += '</div>';
+  }
+
+  document.getElementById('writerResultsContent').innerHTML = html;
+}
 
 // Apply saved theme on load
 applyTheme(localStorage.getItem('ss-theme') || 'matrix');
@@ -5456,6 +6383,102 @@ def algorithm_scan_progress():
     if prog['done']:
         with _algorithm_lock:
             result = _algorithm_progress.pop(scan_id, {})
+        if result.get('error'):
+            return jsonify(error=result['error'], done=True), 500
+        return jsonify(done=True, **(result.get('result') or {}))
+    return jsonify(
+        done=False, phase=prog['phase'],
+        phase_detail=prog['phase_detail'], percent=prog['percent'],
+    )
+
+
+# ─── Writer Routes ───
+@app.route('/writer/analyze', methods=['POST'])
+def writer_analyze():
+    import uuid as _uuid
+    scan_id = _uuid.uuid4().hex[:12]
+
+    text = None
+    filename = 'pasted_text'
+
+    if 'file' in request.files:
+        f = request.files['file']
+        if f.filename:
+            filename = f.filename
+            ext = os.path.splitext(f.filename)[1].lower()
+            allowed = {'.txt', '.md', '.docx', '.pdf'}
+            if ext not in allowed:
+                return jsonify(error=f"Unsupported file type: {ext}"), 400
+            save_path = os.path.join(WRITER_UPLOAD_DIR, scan_id + ext)
+            f.save(save_path)
+            text = _extract_text_from_file(save_path, ext)
+            if text is None or text.strip() == '':
+                return jsonify(error="Could not extract text from file."), 400
+    else:
+        text = request.form.get('text', '').strip()
+
+    if not text:
+        return jsonify(error="No text provided."), 400
+
+    if len(text) < 20:
+        return jsonify(error="Text too short. Please provide at least 20 characters."), 400
+
+    with _writer_lock:
+        _writer_progress[scan_id] = {
+            'done': False, 'phase': 'starting',
+            'phase_detail': 'Initializing analysis...', 'percent': 0,
+            'result': None, 'error': None,
+        }
+
+    def run_writer(sid, txt, fname):
+        import time as _time
+        t0 = _time.time()
+        try:
+            analyzer = WritingAnalyzer(txt)
+            result = analyzer.analyze(scan_id=sid)
+            elapsed = round(_time.time() - t0, 1)
+
+            # Save to scan history
+            text_preview = txt[:200].replace('\n', ' ')
+            _add_scan_history(
+                scan_type='writer',
+                filename=fname,
+                elapsed=elapsed,
+                extra={
+                    'overall_score': result.get('overall_score', 0),
+                    'overall_grade': result.get('overall_grade', 'C'),
+                    'word_count': result.get('stats', {}).get('word_count', 0),
+                    'text_preview': text_preview,
+                    'categories': [
+                        {'name': c['name'], 'score': c['score'], 'grade': c.get('grade', 'C')}
+                        for c in result.get('categories', [])
+                    ],
+                }
+            )
+
+            result['text_preview'] = text_preview
+            with _writer_lock:
+                _writer_progress[sid]['done'] = True
+                _writer_progress[sid]['result'] = result
+        except Exception as ex:
+            with _writer_lock:
+                _writer_progress[sid]['done'] = True
+                _writer_progress[sid]['error'] = str(ex)
+
+    threading.Thread(target=run_writer, args=(scan_id, text, filename), daemon=True).start()
+    return jsonify(scan_id=scan_id)
+
+
+@app.route('/writer/analyze/progress')
+def writer_analyze_progress():
+    scan_id = request.args.get('id', '')
+    with _writer_lock:
+        prog = _writer_progress.get(scan_id)
+    if not prog:
+        return jsonify(error="Unknown scan"), 404
+    if prog['done']:
+        with _writer_lock:
+            result = _writer_progress.pop(scan_id, {})
         if result.get('error'):
             return jsonify(error=result['error'], done=True), 500
         return jsonify(done=True, **(result.get('result') or {}))
