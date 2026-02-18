@@ -2322,6 +2322,18 @@ HTML_PAGE = r'''<!DOCTYPE html>
       </div>
     </div>
     <div class="results" id="algorithmResults">
+      <div style="margin-bottom:10px;">
+        <button class="history-toggle" id="algorithmHistoryToggle" onclick="toggleScanHistory('algorithm')">
+          > Analysis History [ Click to expand ]
+        </button>
+        <div id="algorithmHistoryPanel" hidden>
+          <div class="history-controls" id="algorithmHistoryControls" hidden>
+            <button class="history-clear-btn" onclick="clearScanHistory('algorithm')">[ Clear History ]</button>
+            <span style="color:var(--text-dimmer);font-size:11px;" id="algorithmHistoryCount"></span>
+          </div>
+          <div id="algorithmHistoryList"></div>
+        </div>
+      </div>
       <div class="status-line" id="algorithmStatus" style="display:none">
         <span class="spinner" id="algorithmSpinner"></span>
         <span id="algorithmStatusText">Analyzing...</span>
@@ -3468,19 +3480,20 @@ function downloadTranscript(format) {
 }
 
 // ==================== SCAN HISTORY (text/audio/transcribe) ====================
-const scanHistoryOpen = {text: false, audio: false, transcribe: false};
+const scanHistoryOpen = {text: false, audio: false, transcribe: false, algorithm: false};
 
 async function toggleScanHistory(type) {
   const panel = document.getElementById(type + 'HistoryPanel');
   const btn = document.getElementById(type + 'HistoryToggle');
   scanHistoryOpen[type] = !scanHistoryOpen[type];
+  const histLabel = type === 'algorithm' ? 'Analysis History' : 'Scan History';
   if (scanHistoryOpen[type]) {
     panel.hidden = false;
-    btn.innerHTML = '> Scan History [ Click to collapse ]';
+    btn.innerHTML = '> ' + histLabel + ' [ Click to collapse ]';
     await loadScanHistory(type);
   } else {
     panel.hidden = true;
-    btn.innerHTML = '> Scan History [ Click to expand ]';
+    btn.innerHTML = '> ' + histLabel + ' [ Click to expand ]';
   }
 }
 
@@ -3500,22 +3513,34 @@ async function loadScanHistory(type) {
     countEl.textContent = data.items.length + ' scan' + (data.items.length !== 1 ? 's' : '');
     let html = '';
     for (const item of data.items) {
-      const dur = item.duration ? fmtTime(item.duration) : '??';
-      const lang = item.language ? item.language.toUpperCase() : '';
       html += '<div class="scan-history-item" id="shi_' + item.id + '">';
       html += '<div style="display:flex;justify-content:space-between;align-items:center;">';
-      html += '<span style="color:#00ff41;font-size:12px;font-weight:bold;">' + escapeHtml(item.filename) + '</span>';
+      html += '<span style="color:var(--accent);font-size:12px;font-weight:bold;">' + escapeHtml(item.filename) + '</span>';
       html += '<span class="hist-delete" style="display:inline;position:static;width:auto;height:auto;line-height:normal;padding:2px 6px;" onclick="deleteScanHistoryItem(\'' + item.id + '\',\'' + type + '\')">&times;</span>';
       html += '</div>';
-      html += '<div style="font-size:11px;color:#0a5e2a;margin-top:4px;">';
-      html += item.date + ' &bull; ' + dur;
-      if (lang) html += ' &bull; ' + lang;
-      html += ' &bull; ' + (item.elapsed || '?') + 's';
-      if (item.search_text) html += ' &bull; Search: "' + escapeHtml(item.search_text) + '"';
-      html += ' &bull; ' + (item.matches_count || 0) + ' match(es)';
-      html += '</div>';
-      if (item.transcript_preview) {
-        html += '<div style="font-size:10px;color:#0a4e2a;margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + escapeHtml(item.transcript_preview) + '</div>';
+      if (type === 'algorithm' && item.scores_summary) {
+        html += '<div style="font-size:11px;color:var(--text-dimmer);margin-top:4px;">';
+        html += item.date + ' &bull; ' + (item.elapsed || '?') + 's &bull; ' + fmtDuration(item.duration || 0);
+        html += '</div>';
+        html += '<div style="font-size:11px;margin-top:6px;display:flex;flex-wrap:wrap;gap:6px">';
+        for (const sc of item.scores_summary) {
+          const gc = 'grade-' + (sc.grade||'c').toLowerCase();
+          html += '<span style="padding:2px 8px;border:1px solid var(--border);border-radius:10px;font-size:10px;letter-spacing:0.5px" class="' + gc + '">' + sc.name + ' ' + sc.score + '</span>';
+        }
+        html += '</div>';
+      } else {
+        const dur = item.duration ? fmtTime(item.duration) : '??';
+        const lang = item.language ? item.language.toUpperCase() : '';
+        html += '<div style="font-size:11px;color:var(--text-dimmer);margin-top:4px;">';
+        html += item.date + ' &bull; ' + dur;
+        if (lang) html += ' &bull; ' + lang;
+        html += ' &bull; ' + (item.elapsed || '?') + 's';
+        if (item.search_text) html += ' &bull; Search: "' + escapeHtml(item.search_text) + '"';
+        html += ' &bull; ' + (item.matches_count || 0) + ' match(es)';
+        html += '</div>';
+        if (item.transcript_preview) {
+          html += '<div style="font-size:10px;color:var(--text-dimmer);margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + escapeHtml(item.transcript_preview) + '</div>';
+        }
       }
       html += '</div>';
     }
@@ -4747,6 +4772,20 @@ def algorithm_scan():
             with _algorithm_lock:
                 _algorithm_progress[scan_id]['done'] = True
                 _algorithm_progress[scan_id]['result'] = result
+            # Save to scan history
+            scores_summary = []
+            for key in sorted(result.get('scores', {}).keys(), key=lambda k: -result['scores'][k]['score']):
+                sc = result['scores'][key]
+                scores_summary.append({'name': sc['name'], 'score': sc['score'], 'grade': sc['grade']})
+            props = result.get('properties', {})
+            _add_scan_history({
+                'type': 'algorithm',
+                'filename': original_filename,
+                'duration': props.get('duration', 0),
+                'elapsed': result.get('elapsed', 0),
+                'scores_summary': scores_summary,
+                'transcript_preview': (props.get('transcript', '') or '')[:200],
+            })
         except Exception as e:
             _sec_log.error(f"Algorithm scan error: {e}")
             with _algorithm_lock:
