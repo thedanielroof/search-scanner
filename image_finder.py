@@ -1134,7 +1134,8 @@ class VideoAnalyzer:
         p = self.props
         weights = spec['weights']
         breakdown = {}
-        tips = []
+        improve = []   # things to fix
+        strengths = [] # what's already good
 
         # --- Duration Score ---
         dur = p.get('duration', 0)
@@ -1142,23 +1143,23 @@ class VideoAnalyzer:
         ok_lo, ok_hi = spec['ok_duration']
         if ideal_lo <= dur <= ideal_hi:
             breakdown['duration'] = 100
+            strengths.append(f'Duration ({dur:.0f}s) is in the sweet spot for {spec["name"]}')
         elif ok_lo <= dur <= ok_hi:
             if dur < ideal_lo:
                 breakdown['duration'] = max(40, 100 - int((ideal_lo - dur) / max(ideal_lo - ok_lo, 1) * 60))
-                tips.append(spec['tips']['duration_short'])
+                improve.append(spec['tips']['duration_short'])
             else:
                 breakdown['duration'] = max(40, 100 - int((dur - ideal_hi) / max(ok_hi - ideal_hi, 1) * 60))
-                tips.append(spec['tips']['duration_long'])
+                improve.append(spec['tips']['duration_long'])
         else:
             breakdown['duration'] = 20
             if dur < ok_lo:
-                tips.append(spec['tips']['duration_short'])
+                improve.append(spec['tips']['duration_short'])
             else:
-                tips.append(spec['tips']['duration_long'])
+                improve.append(spec['tips']['duration_long'])
 
         # --- Aspect Ratio Score ---
         actual_ar = p.get('aspect_ratio', 1.0)
-        best_match = 999
         ideal_ar = spec['ideal_aspect'][0] / spec['ideal_aspect'][1]
         best_match = abs(actual_ar - ideal_ar) / max(ideal_ar, 0.01)
         for alt in spec.get('alt_aspects', []):
@@ -1169,14 +1170,16 @@ class VideoAnalyzer:
         tol = spec['aspect_tolerance']
         if best_match < tol * 0.3:
             breakdown['aspect_ratio'] = 100
+            strengths.append(f'Aspect ratio ({p.get("orientation","")}) is perfect for {spec["name"]}')
         elif best_match < tol:
             breakdown['aspect_ratio'] = max(50, 100 - int((best_match / tol) * 50))
+            improve.append(spec['tips']['vertical'])
         elif best_match < tol * 2:
             breakdown['aspect_ratio'] = max(25, 50 - int(((best_match - tol) / tol) * 25))
+            improve.append(spec['tips']['vertical'])
         else:
             breakdown['aspect_ratio'] = 15
-        if breakdown['aspect_ratio'] < 70:
-            tips.append(spec['tips']['vertical'])
+            improve.append(spec['tips']['vertical'])
 
         # --- Resolution Score ---
         w, h = p.get('width', 0), p.get('height', 0)
@@ -1187,11 +1190,13 @@ class VideoAnalyzer:
         min_pixels = min_w * min_h
         if pixels >= ideal_pixels:
             breakdown['resolution'] = 100
+            strengths.append(f'Resolution ({w}x{h}) meets the ideal quality standard')
         elif pixels >= min_pixels:
             breakdown['resolution'] = 50 + int(50 * (pixels - min_pixels) / max(ideal_pixels - min_pixels, 1))
+            improve.append(spec['tips']['resolution'])
         else:
             breakdown['resolution'] = max(10, int(50 * pixels / max(min_pixels, 1)))
-            tips.append(spec['tips']['resolution'])
+            improve.append(spec['tips']['resolution'])
 
         # --- Audio Score ---
         has_audio = p.get('has_audio', False)
@@ -1199,52 +1204,67 @@ class VideoAnalyzer:
         if spec['audio_required']:
             if not has_audio:
                 breakdown['audio'] = 10
-                tips.append(spec['tips']['audio'])
+                improve.append(spec['tips']['audio'])
             elif loudness < 10:
                 breakdown['audio'] = 35
-                tips.append(spec['tips']['audio'])
+                improve.append(spec['tips']['audio'])
             elif loudness < 25:
                 breakdown['audio'] = 60
+                improve.append('Audio is quiet — increase volume levels for better engagement')
             else:
                 breakdown['audio'] = min(100, 70 + int(loudness * 0.3))
+                strengths.append('Audio track is present with good volume levels')
         else:
             if has_audio:
                 breakdown['audio'] = 80
+                strengths.append('Has audio — gives you an edge even though this platform autoplays muted')
             else:
                 breakdown['audio'] = 50
+                improve.append('Consider adding audio — even on muted platforms, audio improves engagement when turned on')
 
         # --- Engagement Score ---
         motion_raw = p.get('avg_motion', 0)
         motion_score = min(100, int(motion_raw * 4))
-        if motion_score < 40:
-            tips.append(spec['tips']['motion'])
+        if motion_score >= 60:
+            strengths.append('Good visual motion and energy throughout the video')
+        else:
+            improve.append(spec['tips']['motion'])
 
         cut_rate = p.get('scene_change_rate', 0)
         if spec['fast_cuts_boost']:
             cut_score = min(100, int(cut_rate * 4))
-            if cut_score < 40:
-                tips.append(spec['tips']['cuts'])
+            if cut_score >= 60:
+                strengths.append(f'Fast-paced editing ({cut_rate:.0f} cuts/min) matches {spec["name"]} style')
+            else:
+                improve.append(spec['tips']['cuts'])
         else:
             if cut_rate < 5:
                 cut_score = 50
+                improve.append('Add more scene variety — consider using b-roll or different angles')
             elif cut_rate < 20:
                 cut_score = 80
+                strengths.append('Good editing pace — not too fast, not too slow')
             else:
                 cut_score = max(40, 80 - int((cut_rate - 20) * 2))
+                improve.append(f'Pacing may be too fast ({cut_rate:.0f} cuts/min) — try a steadier rhythm for this platform')
 
         face_freq = p.get('face_frequency', 0)
         if spec['faces_boost']:
             face_score = min(100, int(face_freq * 150))
-            if face_score < 40:
-                tips.append(spec['tips']['faces'])
+            if face_score >= 50:
+                strengths.append('Face presence detected — this boosts engagement significantly')
+            else:
+                improve.append(spec['tips']['faces'])
         else:
             face_score = 60 + int(face_freq * 40)
 
         hook = p.get('hook_strength', 0)
         if spec['hook_critical']:
             hook_score = hook
-            if hook_score < 40:
-                tips.append(spec['tips']['hook'])
+            if hook_score >= 50:
+                strengths.append('Strong opening hook — first 3 seconds have good visual energy')
+            else:
+                improve.append(spec['tips']['hook'])
         else:
             hook_score = max(60, hook)
 
@@ -1254,17 +1274,20 @@ class VideoAnalyzer:
         bright = p.get('avg_brightness', 128)
         if 100 <= bright <= 180:
             bright_score = 100
+            strengths.append('Well-lit video — good brightness levels')
         elif 70 <= bright <= 200:
             bright_score = 70
         else:
             bright_score = 30
-            tips.append(spec['tips']['brightness'])
+            improve.append(spec['tips']['brightness'])
 
         sat = p.get('avg_saturation', 80)
         if spec['saturation_boost']:
             sat_score = min(100, int(sat * 0.8))
-            if sat_score < 50:
-                tips.append(spec['tips']['saturation'])
+            if sat_score >= 60:
+                strengths.append('Vibrant color saturation — stands out in the feed')
+            else:
+                improve.append(spec['tips']['saturation'])
         else:
             sat_score = min(100, 50 + int(sat * 0.4))
 
@@ -1273,15 +1296,19 @@ class VideoAnalyzer:
         if spec['captions_critical']:
             if has_captions and caption_freq > 0.3:
                 caption_score = 100
+                strengths.append('Text overlays/captions detected — critical for this platform')
             elif has_captions:
                 caption_score = 60
+                improve.append('Captions detected but not consistent — add them throughout the video')
             else:
                 caption_score = 15
-                tips.append(spec['tips']['captions'])
+                improve.append(spec['tips']['captions'])
         elif spec['captions_boost']:
             caption_score = 80 if has_captions else 50
-            if not has_captions:
-                tips.append(spec['tips']['captions'])
+            if has_captions:
+                strengths.append('Text overlays present — helps with viewer retention')
+            else:
+                improve.append(spec['tips']['captions'])
         else:
             caption_score = 70
 
@@ -1293,6 +1320,7 @@ class VideoAnalyzer:
             fps_score = 70
         else:
             fps_score = 30
+            improve.append(f'Frame rate ({vid_fps:.0f} fps) is too low — aim for {fps_lo}-{fps_hi} fps')
 
         breakdown['platform_bonus'] = int((bright_score + sat_score + caption_score + fps_score) / 4)
 
@@ -1314,19 +1342,22 @@ class VideoAnalyzer:
         else:
             grade = 'F'
 
-        # Deduplicate and limit tips
-        seen = set()
-        unique_tips = []
-        for t in tips:
-            if t not in seen:
-                seen.add(t)
-                unique_tips.append(t)
-        unique_tips = unique_tips[:5]
+        # Deduplicate
+        def _dedup(items):
+            seen = set()
+            out = []
+            for t in items:
+                if t not in seen:
+                    seen.add(t)
+                    out.append(t)
+            return out
 
         return {
             'name': spec['name'], 'icon': spec['icon'],
             'score': total, 'grade': grade,
-            'breakdown': breakdown, 'tips': unique_tips,
+            'breakdown': breakdown,
+            'strengths': _dedup(strengths),
+            'improve': _dedup(improve),
         }
 
 
@@ -1767,6 +1798,14 @@ HTML_PAGE = r'''<!DOCTYPE html>
     background:var(--accent-faint); border-radius:0 6px 6px 0; font-size:12px; color:var(--text-dim);
     line-height:1.5; }
   .algo-tips li::before { content:'> '; color:var(--accent); font-weight:700; }
+  .algo-strengths li { border-left-color:#00ff41; background:rgba(0,255,65,0.06); }
+  .algo-strengths li::before { content:'+ '; color:#00ff41; }
+  .algo-improve li { border-left-color:#ffaa00; background:rgba(255,170,0,0.06); }
+  .algo-improve li::before { content:'! '; color:#ffaa00; }
+  body.glass .algo-strengths li { border-left-color:#1a8a3e; background:rgba(26,138,62,0.06); }
+  body.glass .algo-strengths li::before { color:#1a8a3e; }
+  body.glass .algo-improve li { border-left-color:#b87a00; background:rgba(184,122,0,0.06); }
+  body.glass .algo-improve li::before { color:#b87a00; }
   .algo-no-tips { font-size:12px; color:var(--accent); padding:8px 0; }
   body.glass .algo-card { background:rgba(255,255,255,0.35); border-color:rgba(255,255,255,0.5); }
   body.glass .algo-card:hover { border-color:#2a6cb6; box-shadow:0 0 15px rgba(42,108,182,0.15); }
@@ -3674,11 +3713,21 @@ function renderAlgorithmResults(data) {
       html += '</div>';
     });
     html += '</div>';
-    if (s.tips && s.tips.length > 0) {
-      html += '<ul class="algo-tips">';
-      s.tips.forEach(function(tip) { html += '<li>' + tip + '</li>'; });
+    // Strengths
+    if (s.strengths && s.strengths.length > 0) {
+      html += '<div style="font-size:10px;color:var(--text-dimmer);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px;margin-top:4px">&#10003; What\'s Working</div>';
+      html += '<ul class="algo-tips algo-strengths">';
+      s.strengths.forEach(function(t) { html += '<li>' + t + '</li>'; });
       html += '</ul>';
-    } else {
+    }
+    // Improvements
+    if (s.improve && s.improve.length > 0) {
+      html += '<div style="font-size:10px;color:var(--text-dimmer);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px;margin-top:10px">&#9888; How To Improve</div>';
+      html += '<ul class="algo-tips algo-improve">';
+      s.improve.forEach(function(t) { html += '<li>' + t + '</li>'; });
+      html += '</ul>';
+    }
+    if ((!s.strengths || !s.strengths.length) && (!s.improve || !s.improve.length)) {
       html += '<div class="algo-no-tips">> Great match for ' + s.name + '!</div>';
     }
     html += '</div>';
