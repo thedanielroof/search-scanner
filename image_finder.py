@@ -88,7 +88,7 @@ _APP_PASSWORD_HASH = hashlib.sha256((_APP_SALT + '1146').encode()).hexdigest()
 app.config['SESSION_COOKIE_HTTPONLY'] = True    # JS can't access session cookie
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'  # CSRF protection for cookies
 app.config['PERMANENT_SESSION_LIFETIME'] = 3600  # 1 hour session timeout
-app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024  # 500MB max upload size
+app.config['MAX_CONTENT_LENGTH'] = 2 * 1024 * 1024 * 1024  # 2GB max upload size
 
 # Rate limiting / brute force protection
 _login_attempts = defaultdict(list)  # IP -> [timestamps]
@@ -2878,7 +2878,7 @@ HTML_PAGE = r'''<!DOCTYPE html>
           </svg>
         </div>
         <p class="upload-text" id="algorithmUploadText">> Drop video file here or click to browse _</p>
-        <p class="upload-hint" id="algorithmUploadHint">MP4, MOV, AVI, MKV, WebM • 500MB max</p>
+        <p class="upload-hint" id="algorithmUploadHint">MP4, MOV, AVI, MKV, WebM • 2GB max</p>
       </div>
       <div class="settings" id="algorithmControls">
         <label style="font-size:12px;color:var(--text-dim);display:block;margin-bottom:10px;line-height:1.6">
@@ -4269,8 +4269,8 @@ function handleAlgorithmFile(file) {
     alert('Please upload a video file (' + VIDEO_EXTS.join(', ') + ')');
     return;
   }
-  if (file.size > 500 * 1024 * 1024) {
-    alert('File too large. Maximum 500MB.');
+  if (file.size > 2 * 1024 * 1024 * 1024) {
+    alert('File too large. Maximum 2GB.');
     return;
   }
   algorithmUploadedFile = file;
@@ -5615,7 +5615,7 @@ def not_found(e):
 
 @app.errorhandler(413)
 def too_large(e):
-    return jsonify(error="File too large (500MB max)"), 413
+    return jsonify(error="File too large (2GB max)"), 413
 
 @app.errorhandler(500)
 def server_error(e):
