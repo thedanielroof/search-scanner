@@ -121,6 +121,11 @@ _audio_scan_progress = {}
 _audio_scan_lock = threading.Lock()
 AUDIO_UPLOAD_DIR = tempfile.mkdtemp(prefix="audioscan_")
 
+# Algorithm analysis progress tracking
+_algorithm_progress = {}
+_algorithm_lock = threading.Lock()
+ALGORITHM_UPLOAD_DIR = tempfile.mkdtemp(prefix="algorithm_")
+
 # Lazy-loaded whisper model singleton
 _whisper_model = None
 _whisper_model_lock = threading.Lock()
@@ -697,6 +702,684 @@ def make_thumbnail_b64(image_path=None, frame_image=None):
         return None
 
 
+# ==================== ALGORITHM: Platform Specs ====================
+PLATFORM_SPECS = {
+    'tiktok': {
+        'name': 'TikTok', 'icon': '&#9835;',
+        'ideal_aspect': (9, 16), 'alt_aspects': [],
+        'aspect_tolerance': 0.15,
+        'ideal_duration': (15, 60), 'ok_duration': (5, 180),
+        'ideal_resolution': (1080, 1920), 'min_resolution': (720, 1280),
+        'ideal_fps': (24, 30),
+        'audio_required': True, 'captions_boost': True, 'captions_critical': False,
+        'faces_boost': True, 'fast_cuts_boost': True, 'hook_critical': True, 'saturation_boost': False,
+        'weights': {'duration': 0.25, 'aspect_ratio': 0.20, 'resolution': 0.12, 'audio': 0.10, 'engagement': 0.23, 'platform_bonus': 0.10},
+        'tips': {
+            'vertical': 'Use 9:16 vertical format for maximum TikTok reach',
+            'duration_short': 'Aim for 15-60 seconds for optimal TikTok distribution',
+            'duration_long': 'Trim to under 60s — TikTok favors shorter loops',
+            'audio': 'Add trending audio/music — sound is essential on TikTok',
+            'hook': 'First 3 seconds must grab attention — add movement or a hook',
+            'cuts': 'Add more quick cuts — fast-paced editing performs better',
+            'faces': 'Show faces prominently — face content gets 38% more likes',
+            'captions': 'Add text overlays — many viewers scroll with sound off initially',
+            'brightness': 'Improve lighting — well-lit content gets pushed by the algorithm',
+            'motion': 'Add more movement/action — static content gets less distribution',
+            'resolution': 'Increase to at least 720x1280 (ideally 1080x1920)',
+            'saturation': 'Increase color vibrancy to catch attention in the feed',
+        },
+    },
+    'instagram_reels': {
+        'name': 'Instagram Reels', 'icon': '&#128247;',
+        'ideal_aspect': (9, 16), 'alt_aspects': [],
+        'aspect_tolerance': 0.10,
+        'ideal_duration': (15, 30), 'ok_duration': (5, 90),
+        'ideal_resolution': (1080, 1920), 'min_resolution': (720, 1280),
+        'ideal_fps': (30, 30),
+        'audio_required': True, 'captions_boost': True, 'captions_critical': False,
+        'faces_boost': True, 'fast_cuts_boost': True, 'hook_critical': True, 'saturation_boost': True,
+        'weights': {'duration': 0.25, 'aspect_ratio': 0.20, 'resolution': 0.15, 'audio': 0.10, 'engagement': 0.20, 'platform_bonus': 0.10},
+        'tips': {
+            'vertical': 'Use 9:16 vertical — Reels are optimized for full-screen vertical',
+            'duration_short': 'Keep between 15-30 seconds for maximum Reels reach',
+            'duration_long': 'Trim to under 30s — shorter Reels get more replays',
+            'audio': 'Add trending audio — Instagram prioritizes Reels with music',
+            'hook': 'Grab attention in the first second — start with action or text',
+            'cuts': 'Use dynamic transitions — Reels algorithm favors fast pacing',
+            'faces': 'Feature faces — Instagram boosts content showing people',
+            'captions': 'Add captions — increases watch time and accessibility',
+            'brightness': 'Use bright, natural lighting for professional look',
+            'motion': 'Add motion and energy — static content underperforms',
+            'resolution': 'Upload in 1080x1920 — Instagram rewards high-quality video',
+            'saturation': 'Boost color saturation — vibrant visuals stand out on Instagram',
+        },
+    },
+    'youtube_shorts': {
+        'name': 'YouTube Shorts', 'icon': '&#9654;',
+        'ideal_aspect': (9, 16), 'alt_aspects': [],
+        'aspect_tolerance': 0.10,
+        'ideal_duration': (15, 58), 'ok_duration': (5, 60),
+        'ideal_resolution': (1080, 1920), 'min_resolution': (720, 1280),
+        'ideal_fps': (24, 60),
+        'audio_required': True, 'captions_boost': True, 'captions_critical': False,
+        'faces_boost': True, 'fast_cuts_boost': False, 'hook_critical': True, 'saturation_boost': False,
+        'weights': {'duration': 0.25, 'aspect_ratio': 0.22, 'resolution': 0.13, 'audio': 0.10, 'engagement': 0.20, 'platform_bonus': 0.10},
+        'tips': {
+            'vertical': 'Must be 9:16 vertical to qualify as a Short',
+            'duration_short': 'Sweet spot is 15-58 seconds for Shorts',
+            'duration_long': 'MUST be under 60 seconds to qualify as a YouTube Short',
+            'audio': 'Add clear audio — Shorts with sound perform significantly better',
+            'hook': 'Hook viewers in 2-3 seconds — Shorts have fast swipe behavior',
+            'cuts': 'Keep pacing engaging but not too frantic',
+            'faces': 'Show your face — YouTube promotes creator-focused content',
+            'captions': 'Add text overlays for better retention',
+            'brightness': 'Good lighting improves viewer retention',
+            'motion': 'Keep it visually dynamic — movement holds attention',
+            'resolution': 'Upload at 1080x1920 for crisp Shorts',
+            'saturation': 'Use vivid colors for thumbnail appeal',
+        },
+    },
+    'youtube': {
+        'name': 'YouTube', 'icon': '&#9658;',
+        'ideal_aspect': (16, 9), 'alt_aspects': [],
+        'aspect_tolerance': 0.10,
+        'ideal_duration': (480, 900), 'ok_duration': (60, 3600),
+        'ideal_resolution': (1920, 1080), 'min_resolution': (1280, 720),
+        'ideal_fps': (24, 60),
+        'audio_required': True, 'captions_boost': True, 'captions_critical': False,
+        'faces_boost': True, 'fast_cuts_boost': False, 'hook_critical': True, 'saturation_boost': False,
+        'weights': {'duration': 0.20, 'aspect_ratio': 0.20, 'resolution': 0.15, 'audio': 0.15, 'engagement': 0.20, 'platform_bonus': 0.10},
+        'tips': {
+            'vertical': 'Use 16:9 horizontal format for standard YouTube',
+            'duration_short': 'YouTube rewards longer watch time — aim for 8-15 minutes',
+            'duration_long': 'Consider breaking into segments for better retention',
+            'audio': 'High-quality audio is critical — use a good mic',
+            'hook': 'First 30 seconds determine if viewers stay — deliver value immediately',
+            'cuts': 'Use a natural editing pace — match cuts to content rhythm',
+            'faces': 'Talking head content builds audience connection',
+            'captions': 'Enable closed captions — improves SEO and accessibility',
+            'brightness': 'Professional lighting increases perceived quality',
+            'motion': 'Vary shots and angles to maintain visual interest',
+            'resolution': 'Upload in 1080p or higher — YouTube promotes HD content',
+            'saturation': 'Balanced colors look professional',
+        },
+    },
+    'facebook': {
+        'name': 'Facebook', 'icon': '&#402;',
+        'ideal_aspect': (1, 1), 'alt_aspects': [(4, 5)],
+        'aspect_tolerance': 0.20,
+        'ideal_duration': (30, 180), 'ok_duration': (10, 600),
+        'ideal_resolution': (1080, 1080), 'min_resolution': (720, 720),
+        'ideal_fps': (24, 30),
+        'audio_required': False, 'captions_boost': False, 'captions_critical': True,
+        'faces_boost': True, 'fast_cuts_boost': False, 'hook_critical': True, 'saturation_boost': False,
+        'weights': {'duration': 0.22, 'aspect_ratio': 0.18, 'resolution': 0.12, 'audio': 0.08, 'engagement': 0.20, 'platform_bonus': 0.20},
+        'tips': {
+            'vertical': 'Use 1:1 square or 4:5 portrait for Facebook feed',
+            'duration_short': 'Aim for 30 seconds to 3 minutes for best reach',
+            'duration_long': 'Trim to under 3 minutes — Facebook favors concise videos',
+            'audio': 'Audio helps but is optional — 85% watch on mute',
+            'hook': 'Capture attention in 3 seconds — users scroll fast',
+            'cuts': 'Moderate pacing works best for Facebook audiences',
+            'faces': 'Videos with faces get 38% higher engagement',
+            'captions': 'CAPTIONS ARE CRITICAL — 85% of Facebook videos are watched without sound',
+            'brightness': 'Bright, clear video stands out in the feed',
+            'motion': 'Add some movement to catch the eye while scrolling',
+            'resolution': 'Upload at 1080x1080 minimum',
+            'saturation': 'Natural colors work best on Facebook',
+        },
+    },
+    'twitter': {
+        'name': 'Twitter / X', 'icon': '&#120143;',
+        'ideal_aspect': (16, 9), 'alt_aspects': [(1, 1)],
+        'aspect_tolerance': 0.15,
+        'ideal_duration': (15, 45), 'ok_duration': (5, 140),
+        'ideal_resolution': (1280, 720), 'min_resolution': (640, 360),
+        'ideal_fps': (24, 30),
+        'audio_required': False, 'captions_boost': False, 'captions_critical': True,
+        'faces_boost': False, 'fast_cuts_boost': False, 'hook_critical': True, 'saturation_boost': False,
+        'weights': {'duration': 0.25, 'aspect_ratio': 0.18, 'resolution': 0.12, 'audio': 0.08, 'engagement': 0.17, 'platform_bonus': 0.20},
+        'tips': {
+            'vertical': 'Use 16:9 landscape or 1:1 square for Twitter/X',
+            'duration_short': 'Keep to 15-45 seconds — Twitter is fast-paced',
+            'duration_long': 'Under 2:20 is the max — shorter is better',
+            'audio': 'Audio optional — videos autoplay on mute',
+            'hook': 'Start with the most compelling moment',
+            'cuts': 'Direct and punchy editing works best',
+            'faces': 'Not critical for Twitter but helps engagement',
+            'captions': 'ADD CAPTIONS — videos autoplay muted in the feed',
+            'brightness': 'Clear visuals stand out in the timeline',
+            'motion': 'Movement catches attention while scrolling',
+            'resolution': '720p minimum for decent quality',
+            'saturation': 'High-contrast colors help in small preview',
+        },
+    },
+    'linkedin': {
+        'name': 'LinkedIn', 'icon': '&#128188;',
+        'ideal_aspect': (1, 1), 'alt_aspects': [(16, 9)],
+        'aspect_tolerance': 0.15,
+        'ideal_duration': (30, 300), 'ok_duration': (10, 600),
+        'ideal_resolution': (1080, 1080), 'min_resolution': (720, 720),
+        'ideal_fps': (24, 30),
+        'audio_required': True, 'captions_boost': False, 'captions_critical': True,
+        'faces_boost': True, 'fast_cuts_boost': False, 'hook_critical': False, 'saturation_boost': False,
+        'weights': {'duration': 0.22, 'aspect_ratio': 0.18, 'resolution': 0.12, 'audio': 0.12, 'engagement': 0.16, 'platform_bonus': 0.20},
+        'tips': {
+            'vertical': 'Use 1:1 square or 16:9 landscape for professional appearance',
+            'duration_short': 'Aim for 30 seconds to 5 minutes for LinkedIn',
+            'duration_long': 'Keep professional and concise — respect your audience',
+            'audio': 'Clear, professional audio enhances credibility',
+            'hook': 'Lead with a strong opening statement or question',
+            'cuts': 'Professional pacing — not too fast, not too slow',
+            'faces': 'Talking head builds trust and professional presence',
+            'captions': 'SUBTITLES ESSENTIAL — most professionals browse on mute',
+            'brightness': 'Professional lighting conveys competence',
+            'motion': 'Steady, purposeful movement — avoid chaotic editing',
+            'resolution': '1080p shows professionalism',
+            'saturation': 'Natural, professional color grading',
+        },
+    },
+    'snapchat': {
+        'name': 'Snapchat', 'icon': '&#128123;',
+        'ideal_aspect': (9, 16), 'alt_aspects': [],
+        'aspect_tolerance': 0.10,
+        'ideal_duration': (3, 10), 'ok_duration': (1, 60),
+        'ideal_resolution': (1080, 1920), 'min_resolution': (720, 1280),
+        'ideal_fps': (24, 30),
+        'audio_required': True, 'captions_boost': False, 'captions_critical': False,
+        'faces_boost': True, 'fast_cuts_boost': True, 'hook_critical': True, 'saturation_boost': False,
+        'weights': {'duration': 0.28, 'aspect_ratio': 0.22, 'resolution': 0.10, 'audio': 0.10, 'engagement': 0.20, 'platform_bonus': 0.10},
+        'tips': {
+            'vertical': 'MUST be 9:16 vertical — Snapchat is full-screen only',
+            'duration_short': 'Keep to 3-10 seconds — Snapchat is ultra-short form',
+            'duration_long': 'Way too long for Snapchat — trim to under 10 seconds',
+            'audio': 'Audio adds energy — use music or voice',
+            'hook': 'Instant impact — viewers swipe in under 2 seconds',
+            'cuts': 'Quick, energetic cuts match Snapchat energy',
+            'faces': 'Face content thrives on Snapchat',
+            'captions': 'Keep text minimal and large for mobile',
+            'brightness': 'Bright, fun, and energetic lighting',
+            'motion': 'High energy movement is expected',
+            'resolution': 'Full HD vertical fills the screen',
+            'saturation': 'Fun, vibrant colors match Snapchat style',
+        },
+    },
+}
+
+
+# ==================== ALGORITHM: Video Analyzer ====================
+class VideoAnalyzer:
+    """Analyze video properties for social media algorithm compatibility."""
+
+    def __init__(self, video_path):
+        self.video_path = video_path
+        self.props = {}
+
+    def _update_progress(self, scan_id, phase, detail, pct):
+        if not scan_id:
+            return
+        with _algorithm_lock:
+            if scan_id in _algorithm_progress:
+                _algorithm_progress[scan_id].update({
+                    'phase': phase, 'phase_detail': detail, 'percent': int(pct)
+                })
+
+    def analyze(self, scan_id=None):
+        """Run full analysis pipeline."""
+        self._update_progress(scan_id, 'analyzing', 'Reading video metadata...', 5)
+        self._extract_basic_props()
+
+        self._update_progress(scan_id, 'analyzing', 'Analyzing audio track...', 15)
+        self._analyze_audio()
+
+        self._update_progress(scan_id, 'analyzing', 'Analyzing visual properties...', 25)
+        self._analyze_visuals(scan_id)
+
+        self._update_progress(scan_id, 'analyzing', 'Detecting faces...', 65)
+        self._detect_faces()
+
+        self._update_progress(scan_id, 'analyzing', 'Checking for text overlays...', 80)
+        self._detect_text_overlays()
+
+        self._update_progress(scan_id, 'analyzing', 'Analyzing opening hook...', 88)
+        self._analyze_hook()
+
+        self._update_progress(scan_id, 'scoring', 'Calculating platform scores...', 92)
+        scores = self._score_all_platforms()
+
+        self._update_progress(scan_id, 'done', 'Analysis complete', 100)
+        return {'properties': self.props, 'scores': scores}
+
+    def _extract_basic_props(self):
+        cap = cv2.VideoCapture(self.video_path)
+        if not cap.isOpened():
+            raise ValueError("Cannot open video file")
+        w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        fps = cap.get(cv2.CAP_PROP_FPS) or 30
+        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        duration = frame_count / fps if fps > 0 else 0
+        cap.release()
+
+        file_size = os.path.getsize(self.video_path)
+        bitrate = (file_size * 8 / duration / 1000) if duration > 0 else 0
+
+        aspect = w / h if h > 0 else 1.0
+        if aspect < 0.7:
+            orientation = 'vertical'
+        elif aspect > 1.3:
+            orientation = 'horizontal'
+        else:
+            orientation = 'square'
+
+        self.props.update({
+            'width': w, 'height': h, 'fps': round(fps, 1),
+            'duration': round(duration, 1), 'frame_count': frame_count,
+            'bitrate_kbps': round(bitrate), 'file_size_mb': round(file_size / (1024*1024), 1),
+            'aspect_ratio': round(aspect, 2), 'orientation': orientation,
+        })
+
+    def _analyze_audio(self):
+        try:
+            import av
+            container = av.open(self.video_path)
+            audio_streams = [s for s in container.streams if s.type == 'audio']
+            if not audio_streams:
+                container.close()
+                self.props['has_audio'] = False
+                self.props['audio_loudness'] = 0
+                return
+            self.props['has_audio'] = True
+            # Compute RMS loudness from first 30s
+            resampler = av.AudioResampler(format='s16', layout='mono', rate=16000)
+            total_sq = 0.0
+            sample_count = 0
+            max_samples = 16000 * 30  # 30 seconds
+            for frame in container.decode(audio=0):
+                resampled = resampler.resample(frame)
+                for rf in (resampled if isinstance(resampled, list) else [resampled]):
+                    arr = rf.to_ndarray().flatten().astype(float)
+                    total_sq += (arr ** 2).sum()
+                    sample_count += len(arr)
+                    if sample_count >= max_samples:
+                        break
+                if sample_count >= max_samples:
+                    break
+            container.close()
+            rms = (total_sq / max(sample_count, 1)) ** 0.5
+            loudness = min(100, rms / 3276.8 * 100)
+            self.props['audio_loudness'] = round(loudness, 1)
+        except Exception:
+            self.props['has_audio'] = False
+            self.props['audio_loudness'] = 0
+
+    def _analyze_visuals(self, scan_id=None):
+        cap = cv2.VideoCapture(self.video_path)
+        if not cap.isOpened():
+            return
+        fps = cap.get(cv2.CAP_PROP_FPS) or 30
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        duration = total_frames / fps if fps > 0 else 0
+
+        # Sample 1 frame per second, max 60
+        sample_interval = max(1.0, duration / 60) if duration > 60 else 1.0
+        n_samples = min(60, int(duration / sample_interval)) if duration > 0 else 0
+
+        brightness_vals, contrast_vals, saturation_vals = [], [], []
+        motion_vals = []
+        scene_changes = 0
+        prev_gray = None
+        SCENE_THRESH = 30
+
+        for i in range(n_samples):
+            t = i * sample_interval
+            cap.set(cv2.CAP_PROP_POS_MSEC, t * 1000)
+            ret, frame = cap.read()
+            if not ret:
+                break
+
+            # Update progress 25% -> 65%
+            if scan_id and n_samples > 0:
+                pct = 25 + int(40 * i / n_samples)
+                self._update_progress(scan_id, 'analyzing', f'Analyzing frame {i+1}/{n_samples}...', pct)
+
+            # Brightness + saturation from HSV
+            hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+            brightness_vals.append(hsv[:,:,2].mean())
+            saturation_vals.append(hsv[:,:,1].mean())
+
+            # Contrast from grayscale
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            contrast_vals.append(gray.std())
+
+            # Motion + scene changes via frame diff (small resize for speed)
+            small = cv2.resize(gray, (160, 90))
+            if prev_gray is not None:
+                diff = cv2.absdiff(small, prev_gray).mean()
+                motion_vals.append(diff)
+                if diff > SCENE_THRESH:
+                    scene_changes += 1
+            prev_gray = small
+
+        cap.release()
+
+        self.props['avg_brightness'] = round(sum(brightness_vals) / max(len(brightness_vals), 1), 1)
+        self.props['avg_contrast'] = round(sum(contrast_vals) / max(len(contrast_vals), 1), 1)
+        self.props['avg_saturation'] = round(sum(saturation_vals) / max(len(saturation_vals), 1), 1)
+        self.props['avg_motion'] = round(sum(motion_vals) / max(len(motion_vals), 1), 1)
+        self.props['scene_changes'] = scene_changes
+        self.props['scene_change_rate'] = round(scene_changes / max(duration, 1) * 60, 1)  # per minute
+
+    def _detect_faces(self):
+        try:
+            cascade_path = cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
+            face_cascade = cv2.CascadeClassifier(cascade_path)
+            cap = cv2.VideoCapture(self.video_path)
+            if not cap.isOpened():
+                self.props['face_detected'] = False
+                self.props['face_frequency'] = 0
+                return
+            fps = cap.get(cv2.CAP_PROP_FPS) or 30
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            duration = total_frames / fps if fps > 0 else 0
+
+            interval = 3.0  # check every 3 seconds
+            n_checks = min(20, int(duration / interval)) if duration > 0 else 0
+            faces_found = 0
+
+            for i in range(max(1, n_checks)):
+                t = i * interval
+                cap.set(cv2.CAP_PROP_POS_MSEC, t * 1000)
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                # Resize for speed
+                h, w = frame.shape[:2]
+                scale = 320 / max(w, 1)
+                small = cv2.resize(frame, (int(w * scale), int(h * scale)))
+                gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
+                faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(20, 20))
+                if len(faces) > 0:
+                    faces_found += 1
+            cap.release()
+            total_checks = max(1, n_checks)
+            self.props['face_detected'] = faces_found > 0
+            self.props['face_frequency'] = round(faces_found / total_checks, 2)
+        except Exception:
+            self.props['face_detected'] = False
+            self.props['face_frequency'] = 0
+
+    def _detect_text_overlays(self):
+        try:
+            cap = cv2.VideoCapture(self.video_path)
+            if not cap.isOpened():
+                self.props['has_text_overlay'] = False
+                self.props['text_overlay_frequency'] = 0
+                return
+            fps = cap.get(cv2.CAP_PROP_FPS) or 30
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            duration = total_frames / fps if fps > 0 else 0
+
+            interval = 5.0
+            n_checks = min(10, int(duration / interval)) if duration > 0 else 0
+            text_found = 0
+
+            for i in range(max(1, n_checks)):
+                t = i * interval
+                cap.set(cv2.CAP_PROP_POS_MSEC, t * 1000)
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                h, w = frame.shape[:2]
+                # Bottom 25% is caption zone
+                caption_zone = frame[int(h * 0.75):, :]
+                gray = cv2.cvtColor(caption_zone, cv2.COLOR_BGR2GRAY)
+                edges = cv2.Canny(gray, 50, 150)
+                edge_density = edges.mean() / 255.0
+                if edge_density > 0.08:
+                    text_found += 1
+            cap.release()
+            total_checks = max(1, n_checks)
+            self.props['has_text_overlay'] = text_found > 0
+            self.props['text_overlay_frequency'] = round(text_found / total_checks, 2)
+        except Exception:
+            self.props['has_text_overlay'] = False
+            self.props['text_overlay_frequency'] = 0
+
+    def _analyze_hook(self):
+        try:
+            cap = cv2.VideoCapture(self.video_path)
+            if not cap.isOpened():
+                self.props['hook_strength'] = 0
+                return
+            fps = cap.get(cv2.CAP_PROP_FPS) or 30
+            # Read 4 frames from first 3 seconds
+            frames = []
+            for i in range(4):
+                cap.set(cv2.CAP_PROP_POS_MSEC, i * 750)
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                frames.append(cv2.resize(gray, (160, 90)))
+            cap.release()
+            if len(frames) < 2:
+                self.props['hook_strength'] = 0
+                return
+            diffs = []
+            for i in range(1, len(frames)):
+                diffs.append(cv2.absdiff(frames[i], frames[i-1]).mean())
+            avg_diff = sum(diffs) / len(diffs)
+            self.props['hook_strength'] = min(100, round(avg_diff * 5))
+        except Exception:
+            self.props['hook_strength'] = 0
+
+    def _score_all_platforms(self):
+        results = {}
+        for key, spec in PLATFORM_SPECS.items():
+            results[key] = self._score_platform(spec)
+        return results
+
+    def _score_platform(self, spec):
+        p = self.props
+        weights = spec['weights']
+        breakdown = {}
+        tips = []
+
+        # --- Duration Score ---
+        dur = p.get('duration', 0)
+        ideal_lo, ideal_hi = spec['ideal_duration']
+        ok_lo, ok_hi = spec['ok_duration']
+        if ideal_lo <= dur <= ideal_hi:
+            breakdown['duration'] = 100
+        elif ok_lo <= dur <= ok_hi:
+            if dur < ideal_lo:
+                breakdown['duration'] = max(40, 100 - int((ideal_lo - dur) / max(ideal_lo - ok_lo, 1) * 60))
+                tips.append(spec['tips']['duration_short'])
+            else:
+                breakdown['duration'] = max(40, 100 - int((dur - ideal_hi) / max(ok_hi - ideal_hi, 1) * 60))
+                tips.append(spec['tips']['duration_long'])
+        else:
+            breakdown['duration'] = 20
+            if dur < ok_lo:
+                tips.append(spec['tips']['duration_short'])
+            else:
+                tips.append(spec['tips']['duration_long'])
+
+        # --- Aspect Ratio Score ---
+        actual_ar = p.get('aspect_ratio', 1.0)
+        best_match = 999
+        ideal_ar = spec['ideal_aspect'][0] / spec['ideal_aspect'][1]
+        best_match = abs(actual_ar - ideal_ar) / max(ideal_ar, 0.01)
+        for alt in spec.get('alt_aspects', []):
+            alt_ar = alt[0] / alt[1]
+            diff = abs(actual_ar - alt_ar) / max(alt_ar, 0.01)
+            if diff < best_match:
+                best_match = diff
+        tol = spec['aspect_tolerance']
+        if best_match < tol * 0.3:
+            breakdown['aspect_ratio'] = 100
+        elif best_match < tol:
+            breakdown['aspect_ratio'] = max(50, 100 - int((best_match / tol) * 50))
+        elif best_match < tol * 2:
+            breakdown['aspect_ratio'] = max(25, 50 - int(((best_match - tol) / tol) * 25))
+        else:
+            breakdown['aspect_ratio'] = 15
+        if breakdown['aspect_ratio'] < 70:
+            tips.append(spec['tips']['vertical'])
+
+        # --- Resolution Score ---
+        w, h = p.get('width', 0), p.get('height', 0)
+        ideal_w, ideal_h = spec['ideal_resolution']
+        min_w, min_h = spec['min_resolution']
+        pixels = w * h
+        ideal_pixels = ideal_w * ideal_h
+        min_pixels = min_w * min_h
+        if pixels >= ideal_pixels:
+            breakdown['resolution'] = 100
+        elif pixels >= min_pixels:
+            breakdown['resolution'] = 50 + int(50 * (pixels - min_pixels) / max(ideal_pixels - min_pixels, 1))
+        else:
+            breakdown['resolution'] = max(10, int(50 * pixels / max(min_pixels, 1)))
+            tips.append(spec['tips']['resolution'])
+
+        # --- Audio Score ---
+        has_audio = p.get('has_audio', False)
+        loudness = p.get('audio_loudness', 0)
+        if spec['audio_required']:
+            if not has_audio:
+                breakdown['audio'] = 10
+                tips.append(spec['tips']['audio'])
+            elif loudness < 10:
+                breakdown['audio'] = 35
+                tips.append(spec['tips']['audio'])
+            elif loudness < 25:
+                breakdown['audio'] = 60
+            else:
+                breakdown['audio'] = min(100, 70 + int(loudness * 0.3))
+        else:
+            if has_audio:
+                breakdown['audio'] = 80
+            else:
+                breakdown['audio'] = 50
+
+        # --- Engagement Score ---
+        motion_raw = p.get('avg_motion', 0)
+        motion_score = min(100, int(motion_raw * 4))
+        if motion_score < 40:
+            tips.append(spec['tips']['motion'])
+
+        cut_rate = p.get('scene_change_rate', 0)
+        if spec['fast_cuts_boost']:
+            cut_score = min(100, int(cut_rate * 4))
+            if cut_score < 40:
+                tips.append(spec['tips']['cuts'])
+        else:
+            if cut_rate < 5:
+                cut_score = 50
+            elif cut_rate < 20:
+                cut_score = 80
+            else:
+                cut_score = max(40, 80 - int((cut_rate - 20) * 2))
+
+        face_freq = p.get('face_frequency', 0)
+        if spec['faces_boost']:
+            face_score = min(100, int(face_freq * 150))
+            if face_score < 40:
+                tips.append(spec['tips']['faces'])
+        else:
+            face_score = 60 + int(face_freq * 40)
+
+        hook = p.get('hook_strength', 0)
+        if spec['hook_critical']:
+            hook_score = hook
+            if hook_score < 40:
+                tips.append(spec['tips']['hook'])
+        else:
+            hook_score = max(60, hook)
+
+        breakdown['engagement'] = int((motion_score + cut_score + face_score + hook_score) / 4)
+
+        # --- Platform Bonus Score ---
+        bright = p.get('avg_brightness', 128)
+        if 100 <= bright <= 180:
+            bright_score = 100
+        elif 70 <= bright <= 200:
+            bright_score = 70
+        else:
+            bright_score = 30
+            tips.append(spec['tips']['brightness'])
+
+        sat = p.get('avg_saturation', 80)
+        if spec['saturation_boost']:
+            sat_score = min(100, int(sat * 0.8))
+            if sat_score < 50:
+                tips.append(spec['tips']['saturation'])
+        else:
+            sat_score = min(100, 50 + int(sat * 0.4))
+
+        has_captions = p.get('has_text_overlay', False)
+        caption_freq = p.get('text_overlay_frequency', 0)
+        if spec['captions_critical']:
+            if has_captions and caption_freq > 0.3:
+                caption_score = 100
+            elif has_captions:
+                caption_score = 60
+            else:
+                caption_score = 15
+                tips.append(spec['tips']['captions'])
+        elif spec['captions_boost']:
+            caption_score = 80 if has_captions else 50
+            if not has_captions:
+                tips.append(spec['tips']['captions'])
+        else:
+            caption_score = 70
+
+        vid_fps = p.get('fps', 30)
+        fps_lo, fps_hi = spec['ideal_fps']
+        if fps_lo <= vid_fps <= fps_hi:
+            fps_score = 100
+        elif vid_fps >= 15:
+            fps_score = 70
+        else:
+            fps_score = 30
+
+        breakdown['platform_bonus'] = int((bright_score + sat_score + caption_score + fps_score) / 4)
+
+        # --- Weighted Total ---
+        total = 0
+        for factor, weight in weights.items():
+            total += breakdown.get(factor, 50) * weight
+        total = int(min(100, max(0, total)))
+
+        # Grade
+        if total >= 85:
+            grade = 'A'
+        elif total >= 70:
+            grade = 'B'
+        elif total >= 50:
+            grade = 'C'
+        elif total >= 30:
+            grade = 'D'
+        else:
+            grade = 'F'
+
+        # Deduplicate and limit tips
+        seen = set()
+        unique_tips = []
+        for t in tips:
+            if t not in seen:
+                seen.add(t)
+                unique_tips.append(t)
+        unique_tips = unique_tips[:5]
+
+        return {
+            'name': spec['name'], 'icon': spec['icon'],
+            'score': total, 'grade': grade,
+            'breakdown': breakdown, 'tips': unique_tips,
+        }
+
+
 HTML_PAGE = r'''<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1082,6 +1765,64 @@ HTML_PAGE = r'''<!DOCTYPE html>
   body.glass .theme-option:hover { background:rgba(42,108,182,0.06); color:#2a6cb6; }
   body.glass .theme-option.active { color:#2a6cb6; }
   body.glass .theme-option.active .opt-dot { box-shadow:0 0 6px rgba(42,108,182,0.4); }
+
+  /* ==================== Algorithm Tab Styles ==================== */
+  .algo-props { display:grid; grid-template-columns:repeat(auto-fill, minmax(180px,1fr)); gap:8px; margin-bottom:20px; }
+  .algo-prop { background:var(--bg-panel); border:1px solid var(--border); border-radius:6px; padding:10px 14px;
+    font-size:11px; display:flex; justify-content:space-between; align-items:center; }
+  .algo-prop .prop-label { color:var(--text-dimmer); text-transform:uppercase; letter-spacing:1px; font-size:10px; }
+  .algo-prop .prop-value { color:var(--accent); font-weight:600; font-size:13px; }
+  .algo-summary { display:grid; grid-template-columns:repeat(auto-fill, minmax(160px,1fr)); gap:14px; margin-bottom:24px; }
+  .algo-card { background:var(--bg-panel); border:1px solid var(--border); border-radius:10px; padding:16px 12px;
+    text-align:center; cursor:pointer; transition:all 0.3s; position:relative; overflow:hidden; }
+  .algo-card:hover { border-color:var(--accent); box-shadow:0 0 20px var(--glow-shadow);
+    transform:translateY(-2px); }
+  .algo-card .card-icon { font-size:22px; margin-bottom:6px; }
+  .algo-card .card-name { font-size:11px; color:var(--text-dim); text-transform:uppercase;
+    letter-spacing:1px; margin-bottom:10px; }
+  .algo-card .card-ring { margin:0 auto 8px; }
+  .algo-card .card-score { font-size:24px; font-weight:700; font-family:var(--font); }
+  .algo-card .card-grade { font-size:13px; font-weight:700; letter-spacing:2px; margin-top:4px; }
+  .grade-a { color:#00ff41; text-shadow:0 0 8px rgba(0,255,65,0.4); }
+  .grade-b { color:#7fff00; text-shadow:0 0 8px rgba(127,255,0,0.3); }
+  .grade-c { color:#ffaa00; text-shadow:0 0 8px rgba(255,170,0,0.3); }
+  .grade-d { color:#ff6e41; text-shadow:0 0 8px rgba(255,110,65,0.3); }
+  .grade-f { color:#ff4141; text-shadow:0 0 8px rgba(255,65,65,0.3); }
+  body.glass .grade-a { color:#1a8a3e; text-shadow:none; }
+  body.glass .grade-b { color:#5a9a10; text-shadow:none; }
+  body.glass .grade-c { color:#b87a00; text-shadow:none; }
+  body.glass .grade-d { color:#c44; text-shadow:none; }
+  body.glass .grade-f { color:#a00; text-shadow:none; }
+  .algo-details { margin-top:10px; }
+  .algo-detail { background:var(--bg-panel); border:1px solid var(--border); border-radius:10px;
+    padding:18px; margin-bottom:14px; transition:all 0.3s; }
+  .algo-detail:hover { border-color:var(--accent-dim); }
+  .algo-detail-header { display:flex; align-items:center; gap:12px; margin-bottom:14px;
+    padding-bottom:12px; border-bottom:1px solid var(--border); }
+  .algo-detail-header .detail-icon { font-size:24px; }
+  .algo-detail-header .detail-name { font-size:14px; font-weight:600; color:var(--text);
+    letter-spacing:1px; flex:1; }
+  .algo-detail-header .detail-badge { font-size:18px; font-weight:700; padding:4px 14px;
+    border-radius:20px; border:2px solid currentColor; }
+  .algo-breakdown { display:grid; grid-template-columns:1fr 1fr; gap:8px 16px; margin-bottom:14px; }
+  @media (max-width:600px) { .algo-breakdown { grid-template-columns:1fr; } }
+  .algo-bar-row { display:flex; align-items:center; gap:8px; }
+  .algo-bar-label { font-size:10px; color:var(--text-dimmer); text-transform:uppercase;
+    letter-spacing:1px; width:80px; flex-shrink:0; }
+  .algo-bar-track { flex:1; height:8px; background:var(--accent-faint); border-radius:4px; overflow:hidden; }
+  .algo-bar-fill { height:100%; border-radius:4px; transition:width 0.6s ease; }
+  .algo-bar-val { font-size:11px; font-weight:600; color:var(--accent); width:28px; text-align:right; flex-shrink:0; }
+  .algo-tips { list-style:none; padding:0; margin:0; }
+  .algo-tips li { padding:8px 12px; margin-bottom:6px; border-left:3px solid var(--accent);
+    background:var(--accent-faint); border-radius:0 6px 6px 0; font-size:12px; color:var(--text-dim);
+    line-height:1.5; }
+  .algo-tips li::before { content:'> '; color:var(--accent); font-weight:700; }
+  .algo-no-tips { font-size:12px; color:var(--accent); padding:8px 0; }
+  body.glass .algo-card { background:rgba(255,255,255,0.35); border-color:rgba(255,255,255,0.5); }
+  body.glass .algo-card:hover { border-color:#2a6cb6; box-shadow:0 0 15px rgba(42,108,182,0.15); }
+  body.glass .algo-detail { background:rgba(255,255,255,0.35); border-color:rgba(255,255,255,0.5); }
+  body.glass .algo-prop { background:rgba(255,255,255,0.35); border-color:rgba(255,255,255,0.5); }
+  body.glass .algo-tips li { background:rgba(42,108,182,0.06); border-left-color:#2a6cb6; }
 </style>
 </head>
 <body>
@@ -1127,6 +1868,7 @@ HTML_PAGE = r'''<!DOCTYPE html>
     <button class="mode-tab" onclick="switchMode('audio')" id="tabAudio"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 010 7.07"/><path d="M19.07 4.93a10 10 0 010 14.14"/></svg>Audio</button>
     <button class="mode-tab" onclick="switchMode('text')" id="tabText"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>Text</button>
     <button class="mode-tab" onclick="switchMode('transcribe')" id="tabTranscribe"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/><path d="M15 5l4 4"/></svg>Transcribe</button>
+    <button class="mode-tab" onclick="switchMode('algorithm')" id="tabAlgorithm"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><path d="M12 20V10"/><path d="M18 20V4"/><path d="M6 20v-4"/></svg>Algorithm</button>
   </div>
 
   <div class="mode-panel active" id="panelImage">
@@ -1411,6 +2153,51 @@ HTML_PAGE = r'''<!DOCTYPE html>
       </div>
     </div>
   </div><!-- /panelTranscribe -->
+
+  <div class="mode-panel" id="panelAlgorithm">
+    <div class="controls">
+      <div class="upload-zone" id="algorithmDropZone" onclick="if(!algorithmUploadedFile) document.getElementById('algorithmFileInput').click()">
+        <input type="file" id="algorithmFileInput" hidden accept=".mp4,.mov,.avi,.mkv,.webm,.m4v,.flv,.wmv">
+        <div class="upload-icon" id="algorithmUploadIcon">
+          <svg width="50" height="50" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="opacity:0.5;filter:drop-shadow(0 0 6px var(--accent))">
+            <path d="M12 20V10"/><path d="M18 20V4"/><path d="M6 20v-4"/>
+          </svg>
+        </div>
+        <p class="upload-text" id="algorithmUploadText">> Drop video file here or click to browse _</p>
+        <p class="upload-hint" id="algorithmUploadHint">MP4, MOV, AVI, MKV, WebM • 500MB max</p>
+      </div>
+      <div class="settings" id="algorithmControls">
+        <label style="font-size:12px;color:var(--text-dim);display:block;margin-bottom:10px;line-height:1.6">
+          Analyzes your video against social media algorithms.<br>
+          Scores your video 0-100 for each platform with tips to improve.
+        </label>
+        <div id="algorithmDisabledNotice" hidden style="color:var(--error);font-size:12px;margin-bottom:10px">
+          &#9888; OpenCV not available. Install opencv-python to use this tool.
+        </div>
+        <button class="scan-btn" id="algorithmScanBtn" onclick="startAlgorithm()" disabled>[ Analyze Video ]</button>
+      </div>
+    </div>
+    <div class="results" id="algorithmResults">
+      <div class="status-line" id="algorithmStatus" style="display:none">
+        <span class="spinner" id="algorithmSpinner"></span>
+        <span id="algorithmStatusText">Analyzing...</span>
+        <span id="algorithmTimerDisplay" style="margin-left:auto;font-size:11px;color:var(--text-dimmer)"></span>
+      </div>
+      <div class="progress-bar" id="algorithmProgressBar" style="display:none">
+        <div class="progress-fill" id="algorithmProgressFill" style="width:0%"></div>
+      </div>
+      <div id="algorithmResultsContent">
+        <div class="empty-state" id="algorithmEmpty">
+          <div class="icon">
+            <svg width="60" height="60" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" style="opacity:0.3">
+              <path d="M12 20V10"/><path d="M18 20V4"/><path d="M6 20v-4"/>
+            </svg>
+          </div>
+          <p>> upload a video to analyze for social media algorithms _</p>
+        </div>
+      </div>
+    </div>
+  </div><!-- /panelAlgorithm -->
 
 </div>
 </div>
@@ -2132,7 +2919,7 @@ let audioScanStart = 0;
 
 function startAudioTimer(panel) {
   audioScanStart = performance.now();
-  const elId = panel === 'text' ? 'textTimerDisplay' : panel === 'transcribe' ? 'transcribeTimerDisplay' : 'audioTimerDisplay';
+  const elId = panel === 'text' ? 'textTimerDisplay' : panel === 'transcribe' ? 'transcribeTimerDisplay' : panel === 'algorithm' ? 'algorithmTimerDisplay' : 'audioTimerDisplay';
   const el = document.getElementById(elId);
   function tick() {
     const s = (performance.now() - audioScanStart) / 1000;
@@ -2719,6 +3506,252 @@ document.addEventListener('click', function(e) {
   const sel = document.getElementById('themeSelector');
   if (sel && !sel.contains(e.target)) sel.classList.remove('open');
 });
+// ==================== ALGORITHM TAB ====================
+let algorithmUploadedFile = null;
+const VIDEO_EXTS = ['.mp4','.mov','.avi','.mkv','.webm','.m4v','.flv','.wmv'];
+
+(function setupAlgorithmDrop() {
+  const zone = document.getElementById('algorithmDropZone');
+  const input = document.getElementById('algorithmFileInput');
+  if (!zone || !input) return;
+  ['dragenter','dragover'].forEach(e => zone.addEventListener(e, ev => {
+    ev.preventDefault(); zone.classList.add('dragover');
+  }));
+  ['dragleave','drop'].forEach(e => zone.addEventListener(e, ev => {
+    ev.preventDefault(); zone.classList.remove('dragover');
+  }));
+  zone.addEventListener('drop', ev => { if (ev.dataTransfer.files[0]) handleAlgorithmFile(ev.dataTransfer.files[0]); });
+  input.addEventListener('change', () => { if (input.files[0]) handleAlgorithmFile(input.files[0]); });
+})();
+
+function handleAlgorithmFile(file) {
+  const ext = '.' + file.name.split('.').pop().toLowerCase();
+  if (!VIDEO_EXTS.includes(ext)) {
+    alert('Please upload a video file (' + VIDEO_EXTS.join(', ') + ')');
+    return;
+  }
+  if (file.size > 500 * 1024 * 1024) {
+    alert('File too large. Maximum 500MB.');
+    return;
+  }
+  algorithmUploadedFile = file;
+  const sizeMB = (file.size / (1024*1024)).toFixed(1);
+  document.getElementById('algorithmUploadText').innerHTML = '> ' + file.name + ' <span style="color:var(--text-dimmer)">(' + sizeMB + ' MB)</span>';
+  document.getElementById('algorithmUploadHint').textContent = 'Click to change file';
+  document.getElementById('algorithmDropZone').onclick = function() { document.getElementById('algorithmFileInput').click(); };
+  document.getElementById('algorithmScanBtn').disabled = false;
+  // Reset results
+  document.getElementById('algorithmResultsContent').innerHTML = '<div class="empty-state" id="algorithmEmpty"><div class="icon"><svg width="60" height="60" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" style="opacity:0.3"><path d="M12 20V10"/><path d="M18 20V4"/><path d="M6 20v-4"/></svg></div><p>> ready to analyze _</p></div>';
+}
+
+async function startAlgorithm() {
+  if (!algorithmUploadedFile) return;
+  const btn = document.getElementById('algorithmScanBtn');
+  const status = document.getElementById('algorithmStatus');
+  const statusText = document.getElementById('algorithmStatusText');
+  const progressBar = document.getElementById('algorithmProgressBar');
+  const progressFill = document.getElementById('algorithmProgressFill');
+  const resultsDiv = document.getElementById('algorithmResultsContent');
+
+  btn.disabled = true;
+  status.style.display = 'flex';
+  progressBar.style.display = 'block';
+  progressFill.style.width = '0%';
+  statusText.textContent = 'Uploading video...';
+  resultsDiv.innerHTML = '';
+  startAudioTimer('algorithm');
+
+  const fd = new FormData();
+  fd.append('video', algorithmUploadedFile);
+
+  try {
+    const resp = await fetch('/algorithm/scan', { method: 'POST', body: fd });
+    const data = await resp.json();
+    if (data.error) { throw new Error(data.error); }
+    const scanId = data.scan_id;
+
+    function poll() {
+      fetch('/algorithm/scan/progress?id=' + scanId).then(r => r.json()).then(prog => {
+        if (prog.error) {
+          statusText.textContent = 'Error: ' + prog.error;
+          document.getElementById('algorithmSpinner').style.display = 'none';
+          cancelAnimationFrame(audioTimerRAF);
+          btn.disabled = false;
+          return;
+        }
+        if (prog.done) {
+          cancelAnimationFrame(audioTimerRAF);
+          status.style.display = 'none';
+          progressBar.style.display = 'none';
+          btn.disabled = false;
+          renderAlgorithmResults(prog);
+          return;
+        }
+        progressFill.style.width = (prog.percent || 0) + '%';
+        statusText.textContent = prog.phase_detail || 'Analyzing...';
+        setTimeout(poll, 500);
+      }).catch(err => {
+        statusText.textContent = 'Error: ' + err.message;
+        cancelAnimationFrame(audioTimerRAF);
+        btn.disabled = false;
+      });
+    }
+    poll();
+  } catch (err) {
+    statusText.textContent = 'Error: ' + err.message;
+    document.getElementById('algorithmSpinner').style.display = 'none';
+    cancelAnimationFrame(audioTimerRAF);
+    btn.disabled = false;
+  }
+}
+
+function algoScoreColor(score) {
+  if (score >= 85) return '#00ff41';
+  if (score >= 70) return '#7fff00';
+  if (score >= 50) return '#ffaa00';
+  if (score >= 30) return '#ff6e41';
+  return '#ff4141';
+}
+
+function algoScoreColorGlass(score) {
+  if (score >= 85) return '#1a8a3e';
+  if (score >= 70) return '#5a9a10';
+  if (score >= 50) return '#b87a00';
+  if (score >= 30) return '#c44';
+  return '#a00';
+}
+
+function algoBarColor(score) {
+  const isGlass = document.body.classList.contains('glass');
+  return isGlass ? algoScoreColorGlass(score) : algoScoreColor(score);
+}
+
+function renderScoreRing(score, size) {
+  size = size || 80;
+  const r = (size - 8) / 2;
+  const circ = 2 * Math.PI * r;
+  const offset = circ * (1 - score / 100);
+  const isGlass = document.body.classList.contains('glass');
+  const color = isGlass ? algoScoreColorGlass(score) : algoScoreColor(score);
+  const trackColor = isGlass ? 'rgba(0,0,0,0.08)' : 'rgba(255,255,255,0.06)';
+  return '<svg width="' + size + '" height="' + size + '" viewBox="0 0 ' + size + ' ' + size + '">' +
+    '<circle cx="' + (size/2) + '" cy="' + (size/2) + '" r="' + r + '" fill="none" stroke="' + trackColor + '" stroke-width="6"/>' +
+    '<circle cx="' + (size/2) + '" cy="' + (size/2) + '" r="' + r + '" fill="none" stroke="' + color + '" stroke-width="6" ' +
+    'stroke-dasharray="' + circ + '" stroke-dashoffset="' + offset + '" stroke-linecap="round" ' +
+    'transform="rotate(-90 ' + (size/2) + ' ' + (size/2) + ')" style="transition:stroke-dashoffset 1s ease;filter:drop-shadow(0 0 4px ' + color + ')"/>' +
+    '</svg>';
+}
+
+function fmtDuration(s) {
+  if (s < 60) return s.toFixed(1) + 's';
+  const m = Math.floor(s / 60);
+  const sec = Math.floor(s % 60);
+  if (m < 60) return m + ':' + (sec < 10 ? '0' : '') + sec;
+  const h = Math.floor(m / 60);
+  return h + ':' + ((m%60) < 10 ? '0' : '') + (m%60) + ':' + (sec < 10 ? '0' : '') + sec;
+}
+
+function renderAlgorithmResults(data) {
+  const p = data.properties || {};
+  const scores = data.scores || {};
+  let html = '';
+
+  // Header
+  html += '<div class="results-header" style="margin-bottom:16px;padding:12px 16px;background:var(--bg-panel);border:1px solid var(--border);border-radius:8px">';
+  html += '<div style="font-size:14px;font-weight:600;color:var(--accent);margin-bottom:4px">' + (data.filename || 'Video') + '</div>';
+  html += '<div style="font-size:11px;color:var(--text-dimmer)">Analyzed in ' + (data.elapsed || 0) + 's</div>';
+  html += '</div>';
+
+  // Video Properties
+  html += '<div style="font-size:11px;color:var(--text-dimmer);text-transform:uppercase;letter-spacing:2px;margin-bottom:8px">> Video Properties</div>';
+  html += '<div class="algo-props">';
+  const props = [
+    ['Duration', fmtDuration(p.duration || 0)],
+    ['Resolution', (p.width||0) + ' x ' + (p.height||0)],
+    ['Aspect Ratio', (p.aspect_ratio||0) + ' (' + (p.orientation||'?') + ')'],
+    ['Frame Rate', (p.fps||0) + ' fps'],
+    ['Bitrate', (p.bitrate_kbps||0) + ' kbps'],
+    ['File Size', (p.file_size_mb||0) + ' MB'],
+    ['Audio', p.has_audio ? 'Yes (loudness: ' + (p.audio_loudness||0) + ')' : 'No audio'],
+    ['Scene Changes', (p.scene_changes||0) + ' (' + (p.scene_change_rate||0) + '/min)'],
+    ['Faces Detected', p.face_detected ? 'Yes (' + Math.round((p.face_frequency||0)*100) + '% of frames)' : 'No'],
+    ['Text Overlays', p.has_text_overlay ? 'Yes' : 'No'],
+    ['Hook Strength', (p.hook_strength||0) + '/100'],
+    ['Brightness', Math.round(p.avg_brightness||0) + '/255'],
+  ];
+  props.forEach(function(pr) {
+    html += '<div class="algo-prop"><span class="prop-label">' + pr[0] + '</span><span class="prop-value">' + pr[1] + '</span></div>';
+  });
+  html += '</div>';
+
+  // Score Cards Overview
+  html += '<div style="font-size:11px;color:var(--text-dimmer);text-transform:uppercase;letter-spacing:2px;margin-bottom:8px">> Platform Scores</div>';
+  // Sort by score descending
+  const sorted = Object.keys(scores).sort(function(a,b) { return scores[b].score - scores[a].score; });
+  html += '<div class="algo-summary">';
+  sorted.forEach(function(key) {
+    const s = scores[key];
+    html += '<div class="algo-card" onclick="document.getElementById(\'detail-' + key + '\').scrollIntoView({behavior:\'smooth\',block:\'center\'})">';
+    html += '<div class="card-icon">' + s.icon + '</div>';
+    html += '<div class="card-name">' + s.name + '</div>';
+    html += '<div class="card-ring">' + renderScoreRing(s.score, 80) + '</div>';
+    html += '<div class="card-score grade-' + s.grade.toLowerCase() + '">' + s.score + '</div>';
+    html += '<div class="card-grade grade-' + s.grade.toLowerCase() + '">' + s.grade + '</div>';
+    html += '</div>';
+  });
+  html += '</div>';
+
+  // Detailed Breakdowns
+  html += '<div style="font-size:11px;color:var(--text-dimmer);text-transform:uppercase;letter-spacing:2px;margin-bottom:8px">> Detailed Breakdown</div>';
+  html += '<div class="algo-details">';
+  const factorLabels = { duration:'Duration', aspect_ratio:'Aspect Ratio', resolution:'Resolution', audio:'Audio', engagement:'Engagement', platform_bonus:'Platform Fit' };
+  sorted.forEach(function(key) {
+    const s = scores[key];
+    html += '<div class="algo-detail" id="detail-' + key + '">';
+    html += '<div class="algo-detail-header">';
+    html += '<span class="detail-icon">' + s.icon + '</span>';
+    html += '<span class="detail-name">' + s.name + '</span>';
+    html += '<span class="detail-badge grade-' + s.grade.toLowerCase() + '">' + s.score + ' ' + s.grade + '</span>';
+    html += '</div>';
+    html += '<div class="algo-breakdown">';
+    Object.keys(factorLabels).forEach(function(f) {
+      const val = (s.breakdown && s.breakdown[f]) || 0;
+      const color = algoBarColor(val);
+      html += '<div class="algo-bar-row">';
+      html += '<span class="algo-bar-label">' + factorLabels[f] + '</span>';
+      html += '<div class="algo-bar-track"><div class="algo-bar-fill" style="width:' + val + '%;background:' + color + '"></div></div>';
+      html += '<span class="algo-bar-val">' + val + '</span>';
+      html += '</div>';
+    });
+    html += '</div>';
+    if (s.tips && s.tips.length > 0) {
+      html += '<ul class="algo-tips">';
+      s.tips.forEach(function(tip) { html += '<li>' + tip + '</li>'; });
+      html += '</ul>';
+    } else {
+      html += '<div class="algo-no-tips">> Great match for ' + s.name + '!</div>';
+    }
+    html += '</div>';
+  });
+  html += '</div>';
+
+  document.getElementById('algorithmResultsContent').innerHTML = html;
+}
+
+// Check if OpenCV is available for Algorithm tab
+(async function checkCv2Status() {
+  try {
+    const resp = await fetch('/algorithm/status');
+    const data = await resp.json();
+    if (!data.available) {
+      const notice = document.getElementById('algorithmDisabledNotice');
+      if (notice) notice.hidden = false;
+      const btn = document.getElementById('algorithmScanBtn');
+      if (btn) btn.style.display = 'none';
+    }
+  } catch(e) {}
+})();
+
 // Apply saved theme on load
 applyTheme(localStorage.getItem('ss-theme') || 'matrix');
 
@@ -3492,6 +4525,80 @@ def audio_folder_scan():
 
     threading.Thread(target=run_folder_scan, daemon=True).start()
     return jsonify(scan_id=scan_id)
+
+
+# ==================== ALGORITHM ROUTES ====================
+@app.route('/algorithm/status')
+def algorithm_status():
+    """Check if video analysis (OpenCV) is available."""
+    return jsonify(available=HAS_CV2)
+
+
+@app.route('/algorithm/scan', methods=['POST'])
+def algorithm_scan():
+    if not HAS_CV2:
+        return jsonify(error="Video analysis not available. Install opencv-python."), 501
+    if 'video' not in request.files:
+        return jsonify(error="No video file uploaded"), 400
+    file = request.files['video']
+    if not file.filename:
+        return jsonify(error="No file selected"), 400
+    ext = Path(file.filename).suffix.lower()
+    if ext not in VIDEO_EXTENSIONS:
+        return jsonify(error="Please upload a video file"), 400
+    temp_path = os.path.join(ALGORITHM_UPLOAD_DIR, f"{uuid.uuid4().hex}{ext}")
+    file.save(temp_path)
+    scan_id = uuid.uuid4().hex[:12]
+    original_filename = file.filename or 'unknown'
+    with _algorithm_lock:
+        _algorithm_progress[scan_id] = {
+            'phase': 'starting', 'phase_detail': 'Initializing...',
+            'percent': 0, 'done': False, 'error': None, 'result': None,
+            'start_time': time.time(), 'filename': original_filename,
+        }
+
+    def run_analysis():
+        try:
+            analyzer = VideoAnalyzer(temp_path)
+            result = analyzer.analyze(scan_id=scan_id)
+            elapsed = time.time() - _algorithm_progress[scan_id]['start_time']
+            result['elapsed'] = round(elapsed, 1)
+            result['filename'] = original_filename
+            with _algorithm_lock:
+                _algorithm_progress[scan_id]['done'] = True
+                _algorithm_progress[scan_id]['result'] = result
+        except Exception as e:
+            _sec_log.error(f"Algorithm scan error: {e}")
+            with _algorithm_lock:
+                _algorithm_progress[scan_id]['done'] = True
+                _algorithm_progress[scan_id]['error'] = str(e)
+        finally:
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                pass
+
+    threading.Thread(target=run_analysis, daemon=True).start()
+    return jsonify(scan_id=scan_id)
+
+
+@app.route('/algorithm/scan/progress')
+def algorithm_scan_progress():
+    scan_id = request.args.get('id', '')
+    with _algorithm_lock:
+        prog = _algorithm_progress.get(scan_id)
+    if not prog:
+        return jsonify(error="Unknown scan"), 404
+    if prog['done']:
+        with _algorithm_lock:
+            result = _algorithm_progress.pop(scan_id, {})
+        if result.get('error'):
+            return jsonify(error=result['error'], done=True), 500
+        return jsonify(done=True, **(result.get('result') or {}))
+    return jsonify(
+        done=False, phase=prog['phase'],
+        phase_detail=prog['phase_detail'], percent=prog['percent'],
+    )
 
 
 @app.route('/reveal', methods=['POST'])
