@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: search-scanner
+    runtime: docker
+    plan: free
+    region: oregon
+    autoDeploy: false
+    envVars:
+      - key: PORT
+        value: 10000
+      - key: SEARCHSCANNER_PASSWORD
+        sync: false
+    healthCheckPath: /login
