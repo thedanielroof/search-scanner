@@ -1177,10 +1177,12 @@ class VideoAnalyzer:
             self.props['script_tips'] = [f'Transcription failed — {str(e)[:80]}']
 
     def _analyze_script(self, text, segments):
-        """Analyze transcript for engagement, storytelling, and script quality."""
+        """Deep analysis of transcript for engagement, storytelling, retention, and script quality."""
+        import re
         script_tips = []
         story_tips = []
         script_strengths = []
+        retention_tips = []
         dur = self.props.get('duration', 1)
         words = text.split()
         word_count = len(words)
@@ -1191,37 +1193,112 @@ class VideoAnalyzer:
         if word_count == 0:
             script_tips.append('No speech detected — add voiceover or narration to dramatically boost engagement')
             story_tips.append('Even short videos benefit from a narrative — consider adding a voiceover telling a mini story')
+            retention_tips.append('Videos with narration retain 2-3x more viewers — add a voiceover to guide the audience')
             self.props['has_speech'] = False
             self.props['script_tips'] = script_tips
             self.props['story_tips'] = story_tips
+            self.props['retention_tips'] = retention_tips
             self.props['script_strengths'] = []
+            self.props['engagement_timeline'] = []
+            self.props['story_score'] = 0
+            self.props['retention_score'] = 0
             return
 
         self.props['has_speech'] = True
         text_lower = text.lower()
 
-        # ===== DELIVERY ANALYSIS =====
+        # ================================================================
+        # SEGMENT-BY-SEGMENT ENGAGEMENT TIMELINE
+        # ================================================================
+        # Break transcript into time-based chunks and score each for engagement
+        positive_words = {'love','great','amazing','awesome','beautiful','happy','excited','perfect',
+                         'wonderful','fantastic','best','incredible','brilliant','excellent','fun',
+                         'joy','glad','grateful','blessed','proud','confident','inspiring','hope',
+                         'win','won','succeed','breakthrough','magic','unbelievable','insane','fire'}
+        negative_words = {'hate','bad','terrible','awful','horrible','sad','angry','worst','ugly',
+                         'pain','hurt','fail','wrong','scary','fear','nervous','disappointed',
+                         'frustrated','stressed','anxious','worried','lost','broken','struggle',
+                         'problem','difficult','hard','tough','mess','disaster','crisis','mistake'}
+        power_words_set = {'amazing','incredible','unbelievable','shocking','powerful','essential',
+                       'proven','guaranteed','exclusive','discover','transform','breakthrough',
+                       'game-changing','mind-blowing','insane','crazy','epic','ultimate',
+                       'secret','hidden','exposed','truth','real','honest','hack','trick',
+                       'deadly','critical','urgent','warning','banned','illegal','free',
+                       'instant','massive','tiny','obsessed','addicted','genius','wild'}
+        hook_words = {'you','how','why','what','did','here','stop','wait','listen',
+                     'secret','hack','tip','mistake','never','always','best','worst',
+                     'question','imagine','picture','three','five','number','guess',
+                     'bet','ready','watch','look','attention','important','warning'}
+        curiosity_phrases = ['but wait', 'here\'s the thing', 'what happened next', 'you won\'t believe',
+                            'plot twist', 'little did', 'turns out', 'the crazy part', 'wait for it',
+                            'keep watching', 'stay with me', 'here\'s where', 'and then', 'guess what',
+                            'the truth is', 'nobody knows', 'what if i told', 'ready for this',
+                            'here\'s why', 'want to know', 'the real reason', 'spoiler', 'but first',
+                            'before i tell you', 'don\'t skip', 'watch till the end', 'the secret',
+                            'i\'m about to', 'this is where', 'that\'s when', 'but there\'s a catch']
+
+        # Build timeline: divide into ~5-8 segments for timeline display
+        n_seg = len(segments)
+        if n_seg >= 5:
+            chunk_size = max(1, n_seg // 6)
+        else:
+            chunk_size = max(1, n_seg)
+        timeline = []
+        for i in range(0, n_seg, chunk_size):
+            chunk_segs = segments[i:i+chunk_size]
+            chunk_text = ' '.join(chunk_segs).lower()
+            chunk_words = chunk_text.split()
+            cw_count = max(len(chunk_words), 1)
+            # Score factors for this chunk
+            emotion_score = min(100, (sum(1 for w in chunk_words if w.strip('.,!?;:\'"') in positive_words) +
+                                      sum(1 for w in chunk_words if w.strip('.,!?;:\'"') in negative_words)) * 25)
+            power_score = min(100, sum(1 for w in chunk_words if w.strip('.,!?;:\'"') in power_words_set) * 30)
+            curiosity_score = min(100, sum(30 for cp in curiosity_phrases if cp in chunk_text))
+            question_score = min(100, chunk_text.count('?') * 40)
+            hook_score_t = min(100, sum(1 for w in chunk_words[:10] if w.strip('.,!?;:\'"') in hook_words) * 20)
+            # Composite engagement score for this segment
+            seg_score = min(100, int(emotion_score * 0.25 + power_score * 0.2 + curiosity_score * 0.25 + question_score * 0.15 + hook_score_t * 0.15))
+            pct_start = round(i / max(n_seg, 1) * 100)
+            pct_end = round(min(i + chunk_size, n_seg) / max(n_seg, 1) * 100)
+            time_start = round(dur * i / max(n_seg, 1), 1)
+            time_end = round(dur * min(i + chunk_size, n_seg) / max(n_seg, 1), 1)
+            label = 'Opening' if i == 0 else ('Closing' if i + chunk_size >= n_seg else f'Middle')
+            timeline.append({
+                'label': label, 'pct_start': pct_start, 'pct_end': pct_end,
+                'time_start': time_start, 'time_end': time_end,
+                'score': seg_score, 'preview': ' '.join(chunk_words[:12]) + ('...' if cw_count > 12 else '')
+            })
+        self.props['engagement_timeline'] = timeline
+
+        # ================================================================
+        # DELIVERY ANALYSIS
+        # ================================================================
 
         # Speaking pace
         if wpm < 80:
-            script_tips.append(f'Speaking pace is slow ({wpm} wpm) — aim for 130-170 words per minute for energetic delivery')
+            script_tips.append(f'Speaking pace is slow ({wpm} wpm) — aim for 130-170 words per minute for energetic delivery. Slow pacing causes drop-off especially in the first 10 seconds')
         elif wpm > 200:
-            script_tips.append(f'Speaking pace is very fast ({wpm} wpm) — slow down slightly for clarity (130-170 wpm is ideal)')
+            script_tips.append(f'Speaking pace is very fast ({wpm} wpm) — slow down slightly for clarity. Fast speech reduces comprehension and makes viewers feel overwhelmed (aim for 130-170 wpm)')
         elif 130 <= wpm <= 170:
-            script_strengths.append(f'Great speaking pace ({wpm} wpm) — natural and engaging rhythm')
+            script_strengths.append(f'Great speaking pace ({wpm} wpm) — natural and engaging rhythm that keeps attention')
         elif wpm < 130:
-            script_tips.append(f'Speaking pace ({wpm} wpm) could be a bit faster — 130-170 wpm sounds natural and engaging')
+            script_tips.append(f'Speaking pace ({wpm} wpm) could be a bit faster — 130-170 wpm sounds natural and energetic. Faster pace = more information density = more reasons to keep watching')
 
-        # Filler word detection
-        fillers = ['um', 'uh', 'like', 'you know', 'basically', 'literally', 'actually', 'sort of', 'kind of']
+        # Filler word detection (expanded)
+        fillers = ['um', 'uh', 'like', 'you know', 'basically', 'literally', 'actually', 'sort of', 'kind of', 'i mean', 'right', 'so yeah', 'honestly']
         filler_count = 0
         for f in fillers:
-            filler_count += text_lower.split().count(f)
+            if ' ' in f:
+                filler_count += text_lower.count(f)
+            else:
+                filler_count += text_lower.split().count(f)
         filler_ratio = filler_count / max(word_count, 1)
-        if filler_ratio > 0.05:
-            script_tips.append(f'Reduce filler words (detected ~{filler_count}) — clean speech sounds more professional and holds attention')
+        if filler_ratio > 0.08:
+            script_tips.append(f'High filler word count (~{filler_count}) — this signals uncertainty and causes viewers to lose trust. Practice the script or use jump cuts to remove dead air')
+        elif filler_ratio > 0.04:
+            script_tips.append(f'Reduce filler words (detected ~{filler_count}) — clean speech sounds more professional and holds attention. Try recording multiple takes')
         elif filler_count <= 2:
-            script_strengths.append('Clean delivery — minimal filler words detected')
+            script_strengths.append('Clean delivery — minimal filler words detected, sounds professional and confident')
 
         # Sentence/segment length variety
         if len(segments) >= 3:
@@ -1229,220 +1306,523 @@ class VideoAnalyzer:
             if lengths:
                 avg_len = sum(lengths) / len(lengths)
                 variance = sum((l - avg_len) ** 2 for l in lengths) / len(lengths)
+                has_short_punch = any(l <= 4 for l in lengths)
+                has_long = any(l >= 15 for l in lengths)
                 if variance < 4 and avg_len > 5:
-                    script_tips.append('Vary sentence lengths — mix short punchy lines with longer ones to create rhythm and keep viewers engaged')
-                elif variance > 20:
+                    script_tips.append('Vary sentence lengths — mix short punchy lines (1-4 words) with longer explanations. Monotone rhythm is the #1 cause of mid-video drop-off')
+                elif variance > 20 and has_short_punch and has_long:
+                    script_strengths.append('Excellent sentence rhythm — varied pacing with punchy lines and detailed moments keeps it dynamic')
+                elif variance > 10:
                     script_strengths.append('Good sentence rhythm — varied pacing keeps it dynamic')
 
         # Repetition / keyword density
-        word_freq = {}
         stopwords = {'the','a','an','is','it','in','to','of','and','or','for','on','at','by','i','we','you','he','she','they','this','that','my','your','with','from','was','be','are','has','have','had','do','does','did','but','not','so','if','as','can','will','just','its','me','our','up','out','no','all','been','about','would','could','should','what','when','where','how','which','who','more','some','them','than','into','over','also','then','now','very','here','there','too','only','own','these','those','other','each','every','after','before','while','still','really','going','thing','things','got','get','like','know','think','want','need','make','take','come','good','right','well','back','even','much','say','said'}
+        word_freq = {}
         for w in words:
             wl = w.lower().strip('.,!?;:"\'-()[]')
             if len(wl) > 2 and wl not in stopwords:
                 word_freq[wl] = word_freq.get(wl, 0) + 1
-        top_words = sorted(word_freq.items(), key=lambda x: -x[1])[:3]
+        top_words = sorted(word_freq.items(), key=lambda x: -x[1])[:5]
         if top_words and top_words[0][1] >= word_count * 0.08 and word_count > 50:
-            script_tips.append(f'Word "{top_words[0][0]}" appears {top_words[0][1]} times — vary your vocabulary to keep it fresh')
+            script_tips.append(f'Word "{top_words[0][0]}" repeats {top_words[0][1]} times — repetition makes content feel thin. Use synonyms or rephrase to keep vocabulary fresh')
+        elif top_words and top_words[0][1] >= word_count * 0.05 and word_count > 80:
+            script_tips.append(f'Mild repetition detected ("{top_words[0][0]}" × {top_words[0][1]}) — try varying your word choices to maintain freshness')
 
-        # ===== HOOK & CTA ANALYSIS =====
+        # Vocabulary richness
+        unique_words = len(set(wl.lower().strip('.,!?;:\'"') for wl in words if len(wl) > 2))
+        vocab_ratio = unique_words / max(word_count, 1)
+        if vocab_ratio >= 0.7 and word_count > 30:
+            script_strengths.append(f'Rich vocabulary ({unique_words} unique words) — diverse word choice keeps the script interesting')
+        elif vocab_ratio < 0.4 and word_count > 50:
+            script_tips.append(f'Limited vocabulary — only {unique_words} unique words. Richer language creates more vivid, engaging content')
 
-        # Hook analysis — first segment
+        # ================================================================
+        # HOOK & CTA ANALYSIS
+        # ================================================================
+
+        # Hook analysis — first 3 seconds / first segment
+        hook_strength_text = 0
         if segments and len(segments) > 0:
             first_words = segments[0].lower() if segments[0] else ''
-            hook_words = ['you', 'how', 'why', 'what', 'did you', 'here', 'stop', 'wait', 'listen',
-                         'secret', 'hack', 'tip', 'mistake', 'never', 'always', 'best', 'worst',
-                         'question', 'imagine', 'picture this', 'let me', 'i need', 'have you',
-                         'do you', 'can you', 'would you', 'three', 'five', 'number one']
-            has_hook = any(hw in first_words for hw in hook_words)
-            if has_hook:
-                script_strengths.append('Strong opening hook detected — grabs attention immediately')
-            elif word_count > 20:
-                script_tips.append('Open with a hook — start with a question, bold claim, or "you" to grab attention in the first 2 seconds')
+            first_two = ' '.join(segments[:min(2, len(segments))]).lower()
+            hook_patterns = {
+                'question_hook': any(first_words.startswith(q) for q in ['how ', 'why ', 'what ', 'did you', 'have you', 'do you', 'can you', 'would you', 'who ']),
+                'you_hook': first_words.startswith('you ') or first_words.startswith('your '),
+                'command_hook': any(first_words.startswith(c) for c in ['stop ', 'wait ', 'listen ', 'look ', 'watch ', 'don\'t ']),
+                'number_hook': bool(re.match(r'^(three|five|seven|ten|\d+)\s', first_words)),
+                'curiosity_hook': any(ch in first_two for ch in ['secret', 'hack', 'mistake', 'never', 'nobody', 'hidden', 'truth', 'warning']),
+                'story_hook': any(first_words.startswith(s) for s in ['so i ', 'i was ', 'one day', 'picture this', 'imagine ', 'let me tell']),
+                'bold_claim': any(bc in first_two for bc in ['best ', 'worst ', 'only ', 'most people', 'everyone', 'guaranteed', 'proven']),
+                'pattern_interrupt': any(first_words.startswith(p) for p in ['okay so ', 'alright ', 'real talk', 'unpopular opinion', 'hot take']),
+            }
+            active_hooks = [k for k, v in hook_patterns.items() if v]
+            hook_strength_text = min(100, len(active_hooks) * 35 + 20) if active_hooks else 0
 
-        # Call-to-action check
+            hook_labels = {
+                'question_hook': 'Question hook', 'you_hook': '"You" hook', 'command_hook': 'Command hook',
+                'number_hook': 'Number hook', 'curiosity_hook': 'Curiosity hook', 'story_hook': 'Story hook',
+                'bold_claim': 'Bold claim hook', 'pattern_interrupt': 'Pattern interrupt'
+            }
+            if active_hooks:
+                hook_names = ', '.join(hook_labels.get(h, h) for h in active_hooks)
+                script_strengths.append(f'Strong opening hook ({hook_names}) — grabs attention immediately and reduces early drop-off')
+                if len(active_hooks) >= 2:
+                    script_strengths.append(f'Layered hook ({len(active_hooks)} techniques) — multiple hooks compound to maximize first-second retention')
+            elif word_count > 20:
+                script_tips.append('WEAK OPENING: Your first sentence doesn\'t hook — 65% of viewers drop off in the first 3 seconds. Start with: a question ("Did you know...?"), a bold claim ("This changed everything"), a "you" statement ("You\'re making this mistake"), or a story ("So I was...").')
+
+            # Delayed hook check — if hook doesn't come in first segment, check second
+            if not active_hooks and len(segments) > 1:
+                second_seg = segments[1].lower()
+                if any(hw in second_seg for hw in ['you','how','why','what','secret','wait','here\'s','but']):
+                    script_tips.append('Your hook is delayed — it appears in the second sentence. Move it to the very first words. Every 0.5 seconds of delay loses ~10% of viewers')
+
+        self.props['hook_strength_text'] = hook_strength_text
+
+        # Call-to-action — deeper analysis
         cta_phrases = ['subscribe', 'follow', 'like', 'comment', 'share', 'link', 'check out',
                        'click', 'tap', 'swipe', 'let me know', 'tell me', 'what do you think',
-                       'drop a', 'hit the', 'sign up', 'download']
-        has_cta = any(cta in text_lower for cta in cta_phrases)
-        if has_cta:
-            script_strengths.append('Call-to-action present — drives viewer interaction')
+                       'drop a', 'hit the', 'sign up', 'download', 'save this', 'send this',
+                       'tag someone', 'duet this', 'stitch this']
+        found_ctas = [cta for cta in cta_phrases if cta in text_lower]
+        # Check if CTA is in the right place (end)
+        cta_in_closing = any(cta in (' '.join(segments[-max(2,n_seg//4):]).lower() if n_seg > 0 else '') for cta in found_ctas)
+        cta_in_opening = any(cta in (' '.join(segments[:max(2,n_seg//4)]).lower() if n_seg > 0 else '') for cta in found_ctas)
+
+        if found_ctas and len(found_ctas) >= 2:
+            script_strengths.append(f'Multiple CTAs ({", ".join(found_ctas[:3])}) — gives viewers clear actions and boosts algorithm signals')
+        elif found_ctas:
+            script_strengths.append(f'Call-to-action present ("{found_ctas[0]}") — drives viewer interaction')
+            if not cta_in_closing and word_count > 30:
+                script_tips.append('Move your CTA closer to the end — CTAs placed in the final 20% of the video convert 3x better because viewers are already invested')
         elif word_count > 30:
-            script_tips.append('Add a call-to-action — ask viewers to like, comment, follow, or share for algorithm boost')
+            script_tips.append('NO CALL-TO-ACTION detected — add "comment below", "follow for more", or "save this" to boost algorithm signals. Best placed at the end when viewer engagement peaks')
+
+        if cta_in_opening and not cta_in_closing and word_count > 40:
+            script_tips.append('CTA is too early — asking for likes/follows before delivering value feels pushy. Hook first, deliver value, then ask')
 
         # Question engagement
         question_count = text.count('?')
-        if question_count >= 2:
+        if question_count >= 3:
+            script_strengths.append(f'Excellent question usage ({question_count} questions) — drives comments, saves, and repeat views')
+        elif question_count >= 2:
             script_strengths.append(f'Uses questions ({question_count}) — drives comments and engagement')
+        elif question_count == 1:
+            script_tips.append(f'Only 1 question — add 1-2 more throughout to boost comment engagement. "What would you do?" or "Am I wrong?" work great')
         elif question_count == 0 and word_count > 50:
-            script_tips.append('Ask questions in your script — questions increase comments and boost algorithm ranking')
+            script_tips.append('No questions asked — questions are the #1 driver of comments. Add "What do you think?", "Have you tried this?", or "Am I the only one?" to spark conversation')
 
-        # Power word check
-        power_words = ['amazing', 'incredible', 'unbelievable', 'shocking', 'powerful', 'essential',
-                       'proven', 'guaranteed', 'exclusive', 'discover', 'transform', 'breakthrough',
-                       'game-changing', 'mind-blowing', 'insane', 'crazy', 'epic', 'ultimate',
-                       'secret', 'hidden', 'exposed', 'truth', 'real', 'honest', 'hack', 'trick']
-        found_power = [pw for pw in power_words if pw in text_lower]
-        if len(found_power) >= 2:
-            script_strengths.append(f'Good use of power words ({", ".join(found_power[:3])}) — boosts emotional engagement')
-        elif not found_power and word_count > 40:
-            script_tips.append('Use power words — words like "incredible", "secret", "proven", "hack" boost emotional engagement')
+        # Power word analysis (expanded with categories)
+        emotional_power = ['amazing','incredible','unbelievable','shocking','mind-blowing','insane','epic','wild','obsessed']
+        urgency_power = ['now','urgent','immediately','critical','warning','before','deadline','limited','hurry','fast']
+        curiosity_power = ['secret','hidden','exposed','truth','real','reveal','discover','unknown','mystery','forbidden']
+        authority_power = ['proven','guaranteed','expert','research','study','science','data','evidence','fact','official']
+        found_emotional = [w for w in emotional_power if w in text_lower]
+        found_urgency = [w for w in urgency_power if w in text_lower]
+        found_curiosity = [w for w in curiosity_power if w in text_lower]
+        found_authority = [w for w in authority_power if w in text_lower]
+        total_power = len(found_emotional) + len(found_urgency) + len(found_curiosity) + len(found_authority)
 
-        # ===== STORY STRUCTURE ANALYSIS =====
+        if total_power >= 4:
+            categories = []
+            if found_emotional: categories.append('emotional')
+            if found_curiosity: categories.append('curiosity')
+            if found_urgency: categories.append('urgency')
+            if found_authority: categories.append('authority')
+            script_strengths.append(f'Strong power language ({total_power} power words across {", ".join(categories)}) — emotionally charged scripts get 2x more shares')
+        elif total_power >= 2:
+            all_found = found_emotional + found_curiosity + found_urgency + found_authority
+            script_strengths.append(f'Good use of power words ({", ".join(all_found[:3])}) — boosts emotional engagement')
+        elif word_count > 40:
+            script_tips.append('ADD POWER WORDS: Your script is emotionally flat. Sprinkle in words like "incredible", "secret", "proven", "warning" — they trigger emotional responses that stop the scroll')
 
-        # Split transcript into thirds (beginning / middle / end)
-        n_seg = len(segments)
+        # ================================================================
+        # RETENTION ANALYSIS
+        # ================================================================
+
+        # Re-hook / pattern interrupt detection (mid-video hooks that prevent drop-off)
+        rehook_phrases = ['but here\'s the thing', 'now here\'s where', 'but wait', 'and then',
+                         'guess what', 'this is where', 'that\'s when', 'the real', 'so then',
+                         'what nobody', 'and the crazy', 'but the best part', 'now watch',
+                         'pay attention', 'don\'t miss this', 'this is important', 'key point',
+                         'but it gets', 'now here comes', 'are you ready', 'hold on',
+                         'okay but', 'now the', 'here\'s the twist', 'plot twist']
+        rehook_count = sum(1 for rh in rehook_phrases if rh in text_lower)
+        rehook_per_min = rehook_count / max(dur / 60, 0.5)
+
+        if rehook_per_min >= 3:
+            script_strengths.append(f'Excellent re-hook density ({rehook_count} pattern interrupts) — keeps viewers engaged throughout with curiosity spikes')
+            retention_tips.append(f'STRONG RETENTION HOOKS: {rehook_count} curiosity hooks detected throughout your script — this prevents mid-video drop-off')
+        elif rehook_count >= 2:
+            script_strengths.append(f'Good re-hooking ({rehook_count} mid-video hooks) — maintains viewer interest')
+            if dur > 30:
+                retention_tips.append(f'ADD MORE RE-HOOKS: You have {rehook_count} but for a {int(dur)}s video, aim for one every 10-15 seconds. Add "but here\'s the thing..." or "now this is where it gets interesting..." to prevent drop-off')
+        elif word_count > 30:
+            retention_tips.append('NO MID-VIDEO HOOKS detected — viewers lose interest every 8-15 seconds. Add pattern interrupts throughout: "but wait", "here\'s where it gets crazy", "now pay attention to this part" — each one resets the drop-off clock')
+
+        # Information density — too sparse or too dense?
+        ideas_per_min = len(set(w.lower().strip('.,!?;:\'"') for w in words if len(w) > 4)) / max(dur / 60, 0.5)
+        if ideas_per_min > 80 and dur > 20:
+            retention_tips.append(f'HIGH INFORMATION DENSITY: You\'re packing ~{int(ideas_per_min)} unique concepts per minute. Viewers need breathing room — add pauses, repetition of key points, or examples to let ideas sink in')
+        elif ideas_per_min < 20 and word_count > 40:
+            retention_tips.append('LOW INFORMATION DENSITY: Your script feels thin on content. Add more value per second — specific tips, examples, data points, or surprising facts to give viewers a reason to keep watching')
+
+        # Drop-off risk zones (check middle segments for engagement dips)
+        if len(timeline) >= 3:
+            mid_scores = [t['score'] for t in timeline[1:-1]]  # exclude opening and closing
+            opening_score = timeline[0]['score'] if timeline else 0
+            if mid_scores:
+                min_mid = min(mid_scores)
+                avg_mid = sum(mid_scores) / len(mid_scores)
+                if min_mid < 20 and opening_score > 40:
+                    worst_idx = mid_scores.index(min_mid) + 1
+                    worst_time = timeline[worst_idx]['time_start']
+                    retention_tips.append(f'DROP-OFF DANGER at ~{worst_time:.0f}s — engagement score drops to {min_mid}/100 in the middle. This is where most viewers will swipe away. Add a curiosity hook, reveal, or emotional moment here')
+                elif avg_mid < 30:
+                    retention_tips.append('WEAK MIDDLE SECTION: The middle of your video has low engagement throughout. The "sagging middle" is the #1 cause of poor retention. Break it up with: a surprising fact, a pattern interrupt, a tonal shift, or a mini-cliffhanger')
+                elif avg_mid > 60:
+                    script_strengths.append('Strong middle section — engagement stays high throughout, minimizing drop-off risk')
+
+        # Payoff density — does the viewer feel rewarded?
+        value_markers = ['tip', 'trick', 'hack', 'step', 'way', 'method', 'strategy', 'technique',
+                        'here\'s how', 'the key', 'the secret', 'the answer', 'the solution',
+                        'do this', 'try this', 'use this', 'what works', 'pro tip', 'quick tip',
+                        'first', 'second', 'third', 'next', 'finally', 'last', 'number one',
+                        'the best', 'the worst', 'the most', 'example', 'for instance', 'like when']
+        value_count = sum(1 for vm in value_markers if vm in text_lower)
+        value_per_min = value_count / max(dur / 60, 0.5)
+        if value_per_min >= 4:
+            script_strengths.append(f'High value density — {value_count} actionable moments detected. Viewers feel rewarded, boosting saves and shares')
+        elif value_count >= 2:
+            script_strengths.append(f'Good value delivery ({value_count} actionable moments) — gives viewers takeaways')
+        elif word_count > 40:
+            retention_tips.append('LOW VALUE DENSITY: Your script doesn\'t deliver enough concrete takeaways. Add specific tips ("here\'s how...", "try this..."), numbered lists, or step-by-step instructions. Valuable content gets saved and shared')
+
+        # Watch-through incentive — reason to stay till end?
+        end_tease_markers = ['stay till the end', 'watch till', 'last one', 'the best one', 'save the best',
+                            'bonus', 'wait for', 'at the end', 'stick around', 'don\'t leave yet',
+                            'the final', 'one more thing', 'but the biggest', 'most important']
+        has_end_tease = any(et in text_lower for et in end_tease_markers)
+        if has_end_tease:
+            script_strengths.append('End-of-video tease detected — gives viewers a reason to watch all the way through, boosting completion rate')
+        elif dur > 20 and word_count > 40:
+            retention_tips.append('NO END TEASE: Give viewers a reason to stay till the end — "but the best part is coming" or "save the biggest tip for last" can boost completion rate by 25-40%')
+
+        # Pacing variety (energy shifts)
+        if n_seg >= 6:
+            seg_lengths = [len(s.split()) for s in segments if s.strip()]
+            if seg_lengths:
+                # Check for pacing shifts (fast-slow-fast pattern)
+                pace_changes = 0
+                for idx in range(1, len(seg_lengths)):
+                    if abs(seg_lengths[idx] - seg_lengths[idx-1]) > 5:
+                        pace_changes += 1
+                pace_variety = pace_changes / max(len(seg_lengths) - 1, 1)
+                if pace_variety >= 0.5:
+                    script_strengths.append('Dynamic pacing — frequent rhythm changes keep the viewer\'s brain engaged and prevent monotony')
+                elif pace_variety < 0.2:
+                    retention_tips.append('MONOTONE PACING: Your delivery has a consistent rhythm throughout — this causes viewer fatigue. Alternate between fast, punchy sections and slower, deliberate moments to maintain attention')
+
+        # ================================================================
+        # STORY STRUCTURE ANALYSIS (DEEP)
+        # ================================================================
+
+        # Split transcript into narrative zones
         if n_seg >= 3:
             third = max(1, n_seg // 3)
-            opening = ' '.join(segments[:third]).lower()
-            middle = ' '.join(segments[third:third*2]).lower()
-            closing = ' '.join(segments[third*2:]).lower()
+            opening_text = ' '.join(segments[:third]).lower()
+            middle_text = ' '.join(segments[third:third*2]).lower()
+            closing_text = ' '.join(segments[third*2:]).lower()
         else:
-            opening = text_lower[:len(text_lower)//3]
-            middle = text_lower[len(text_lower)//3:len(text_lower)*2//3]
-            closing = text_lower[len(text_lower)*2//3:]
+            tl = len(text_lower)
+            opening_text = text_lower[:tl//3]
+            middle_text = text_lower[tl//3:tl*2//3]
+            closing_text = text_lower[tl*2//3:]
 
         # 1. NARRATIVE ARC — does it have setup, development, payoff?
         setup_markers = ['so', 'today', 'here', 'this is', 'let me', 'i want', 'we need', 'the thing is',
                          'story', 'started', 'once', 'back when', 'first time', 'one day', 'picture this',
-                         'imagine', 'what if', 'problem', 'issue', 'challenge', 'struggle']
+                         'imagine', 'what if', 'problem', 'issue', 'challenge', 'struggle', 'context',
+                         'background', 'before', 'originally', 'at first', 'in the beginning']
         conflict_markers = ['but', 'however', 'problem', 'issue', 'challenge', 'struggle', 'hard',
                            'difficult', 'wrong', 'fail', 'mistake', 'stuck', 'couldn\'t', 'didn\'t',
                            'tough', 'crazy', 'disaster', 'worst', 'tried', 'attempt', 'against',
-                           'obstacle', 'setback', 'nervous', 'scared', 'worried', 'frustrated']
+                           'obstacle', 'setback', 'nervous', 'scared', 'worried', 'frustrated',
+                           'unexpected', 'shock', 'surprise', 'turns out', 'realized', 'hit me',
+                           'went wrong', 'blew up', 'fell apart', 'backfired', 'plot twist']
         resolution_markers = ['finally', 'eventually', 'result', 'end', 'turned out', 'realized',
                              'learned', 'discovered', 'solution', 'answer', 'key', 'secret', 'now',
                              'so now', 'moral', 'takeaway', 'lesson', 'point is', 'bottom line',
-                             'that\'s why', 'that\'s how', 'worked', 'success', 'changed', 'transformed']
+                             'that\'s why', 'that\'s how', 'worked', 'success', 'changed', 'transformed',
+                             'conclusion', 'in the end', 'looking back', 'worth it', 'glad', 'grateful']
 
-        has_setup = any(m in opening for m in setup_markers)
-        has_conflict = any(m in middle for m in conflict_markers) or any(m in text_lower for m in conflict_markers)
-        has_resolution = any(m in closing for m in resolution_markers)
+        has_setup = any(m in opening_text for m in setup_markers)
+        has_conflict = any(m in middle_text for m in conflict_markers)
+        has_conflict_anywhere = any(m in text_lower for m in conflict_markers)
+        has_resolution = any(m in closing_text for m in resolution_markers)
 
-        story_elements = sum([has_setup, has_conflict, has_resolution])
-        if story_elements == 3:
-            script_strengths.append('Strong narrative arc — has setup, conflict/tension, and resolution')
+        # Score narrative arc 0-100
+        arc_score = 0
+        if has_setup: arc_score += 30
+        if has_conflict: arc_score += 40
+        elif has_conflict_anywhere: arc_score += 20
+        if has_resolution: arc_score += 30
+
+        story_elements = sum([has_setup, has_conflict or has_conflict_anywhere, has_resolution])
+        if story_elements == 3 and has_conflict:
+            script_strengths.append('Strong narrative arc — has clear setup, conflict/tension, and resolution. This is the structure that keeps viewers watching')
+            if arc_score >= 90:
+                script_strengths.append('Master-level story structure — your arc mirrors professional storytelling frameworks used in viral content')
+        elif story_elements == 3:
+            script_strengths.append('Good story structure — has most narrative elements in place')
+            story_tips.append('SHARPEN YOUR CONFLICT: Your tension/conflict happens outside the middle section. Move the "but" or challenge to the heart of the video for maximum impact — this is where retention is won or lost')
         elif story_elements == 2:
-            script_strengths.append('Good story structure — has most narrative elements')
+            script_strengths.append('Partial story structure detected')
             if not has_setup:
-                story_tips.append('SETUP: Start by setting the scene — give context so viewers understand why they should care')
-            if not has_conflict:
-                story_tips.append('TENSION: Add conflict or a challenge — "but then..." or "the problem was..." creates tension that keeps viewers watching')
+                story_tips.append('MISSING SETUP: Jump straight into context in your opening — "So here\'s the situation..." or "A few weeks ago I..." gives viewers a foundation to care about what happens next')
+            if not has_conflict and not has_conflict_anywhere:
+                story_tips.append('MISSING TENSION: Your script has no conflict, challenge, or "but" moment. Tension is what keeps people watching — add an obstacle, a twist, a mistake, or a "but then everything changed" moment')
             if not has_resolution:
-                story_tips.append('PAYOFF: End with a clear resolution or takeaway — tell the audience what happened or what they should learn')
-        elif story_elements <= 1 and word_count > 30:
-            story_tips.append('BUILD A NARRATIVE ARC: Structure your script as Setup → Tension → Payoff. Start with context, introduce a problem or challenge, then deliver the resolution')
-            if not has_setup:
-                story_tips.append('SETUP: Open by establishing the situation — "So I was..." or "Here\'s the thing about..." draws viewers into your world')
-            if not has_conflict:
-                story_tips.append('TENSION: Every great story needs conflict — add a challenge, obstacle, unexpected twist, or "but" moment to create suspense')
-            if not has_resolution:
-                story_tips.append('PAYOFF: End with a satisfying conclusion — reveal the result, lesson learned, or surprise ending')
+                story_tips.append('MISSING PAYOFF: Your story doesn\'t resolve. End with what happened, what you learned, or the result — an unfinished story feels unsatisfying and reduces repeat views')
+        elif word_count > 30:
+            story_tips.append('NO STORY STRUCTURE DETECTED: Your script reads as a flat monologue. Structure it as: SETUP (context) → TENSION (challenge/problem) → PAYOFF (result/lesson). Even a 15-second video needs this arc — it\'s how the human brain processes information')
+            story_tips.append('QUICK FIX: Take your current script and add three transitions: "So..." (setup), "But then..." (tension), "And that\'s how/why..." (resolution). This simple framework transforms any script')
 
-        # 2. EMOTIONAL JOURNEY — does the tone shift?
-        positive_words = {'love','great','amazing','awesome','beautiful','happy','excited','perfect',
-                         'wonderful','fantastic','best','incredible','brilliant','excellent','fun',
-                         'joy','glad','grateful','blessed','proud','confident','inspiring','hope'}
-        negative_words = {'hate','bad','terrible','awful','horrible','sad','angry','worst','ugly',
-                         'pain','hurt','fail','wrong','scary','fear','nervous','disappointed',
-                         'frustrated','stressed','anxious','worried','lost','broken','struggle'}
-
-        opening_words = set(opening.split())
-        closing_words = set(closing.split())
+        # 2. EMOTIONAL JOURNEY (segment-level analysis)
+        opening_words = set(opening_text.split())
+        middle_words = set(middle_text.split())
+        closing_words = set(closing_text.split())
         pos_open = len(opening_words & positive_words)
         neg_open = len(opening_words & negative_words)
+        pos_mid = len(middle_words & positive_words)
+        neg_mid = len(middle_words & negative_words)
         pos_close = len(closing_words & positive_words)
         neg_close = len(closing_words & negative_words)
 
-        has_emotional_shift = (neg_open > pos_open and pos_close > neg_close) or \
-                              (pos_open > neg_open and neg_close > pos_close)
-        has_emotion = (pos_open + neg_open + pos_close + neg_close) >= 2
+        # Detect emotional patterns
+        emotion_open = 'positive' if pos_open > neg_open else ('negative' if neg_open > pos_open else 'neutral')
+        emotion_mid = 'positive' if pos_mid > neg_mid else ('negative' if neg_mid > pos_mid else 'neutral')
+        emotion_close = 'positive' if pos_close > neg_close else ('negative' if neg_close > pos_close else 'neutral')
 
-        if has_emotional_shift:
-            script_strengths.append('Emotional arc detected — tone shifts between opening and closing, creating a journey')
-        elif has_emotion:
-            if word_count > 50:
-                story_tips.append('CREATE AN EMOTIONAL SHIFT: Start with one emotion and end with another (struggle → triumph, curiosity → surprise) to make your story feel like a journey')
+        emotional_journey = f'{emotion_open} → {emotion_mid} → {emotion_close}'
+        self.props['emotional_journey'] = emotional_journey
+
+        # Classic viral emotional arcs
+        has_transformation = (emotion_open == 'negative' and emotion_close == 'positive')
+        has_tragedy = (emotion_open == 'positive' and emotion_close == 'negative')
+        has_rollercoaster = (emotion_open != emotion_mid and emotion_mid != emotion_close)
+        total_emotion = pos_open + neg_open + pos_mid + neg_mid + pos_close + neg_close
+
+        emotional_score = 0
+        if has_transformation:
+            script_strengths.append(f'Transformation arc ({emotional_journey}) — "struggle to triumph" is the most shared emotional pattern on social media')
+            emotional_score = 90
+        elif has_rollercoaster and total_emotion >= 4:
+            script_strengths.append(f'Emotional rollercoaster ({emotional_journey}) — tone shifts keep viewers emotionally invested throughout')
+            emotional_score = 80
+        elif has_tragedy and total_emotion >= 3:
+            script_strengths.append(f'Dramatic arc ({emotional_journey}) — builds emotional impact toward the ending')
+            emotional_score = 70
+        elif total_emotion >= 3:
+            emotional_score = 50
+            if emotion_open == emotion_close:
+                story_tips.append(f'FLAT EMOTIONAL ARC: Your video starts and ends with the same tone ({emotion_open}). Create an emotional shift — start with struggle and end with triumph, or start calm and build to excitement. Emotional contrast = shareability')
+            else:
+                script_strengths.append(f'Emotional presence detected ({emotional_journey}) — your script has feeling')
         elif word_count > 40:
-            story_tips.append('ADD EMOTION: Use feeling words to connect with viewers — share how you felt, what worried you, what excited you. Emotion is the #1 driver of shares')
+            emotional_score = 15
+            story_tips.append('EMOTIONALLY FLAT: Your script lacks feeling words. Emotion is the #1 driver of shares and saves. Share how you felt: "I was terrified", "I couldn\'t believe it", "This blew my mind". Viewers share content that makes them FEEL something')
 
-        # 3. PERSONAL / RELATABLE elements
+        self.props['emotional_score'] = emotional_score
+
+        # 3. PERSONAL / RELATABLE elements (deeper analysis)
         personal_markers = ['i ', 'my ', 'me ', 'i\'m', 'i was', 'i had', 'i did', 'i thought',
                            'i felt', 'i remember', 'i realized', 'i learned', 'i never', 'i always',
-                           'my life', 'my experience', 'my story', 'personally']
+                           'my life', 'my experience', 'my story', 'personally', 'i noticed',
+                           'i tried', 'i started', 'i decided', 'i used to', 'i\'ve been']
         relatable_markers = ['you know', 'we all', 'everyone', 'have you ever', 'you\'ve probably',
                             'most people', 'we\'ve all', 'relatable', 'same', 'right?', 'happens to',
-                            'been there', 'felt that']
+                            'been there', 'felt that', 'you\'re probably', 'we\'re all', 'sound familiar',
+                            'tell me i\'m not the only', 'if you\'re like me', 'who else', 'anyone else']
+        vulnerability_markers = ['honestly', 'truth is', 'i\'ll admit', 'embarrassing', 'scary',
+                                'i was wrong', 'i failed', 'i messed up', 'i didn\'t know', 'ashamed',
+                                'vulnerable', 'real talk', 'not gonna lie', 'i struggled', 'confession']
         has_personal = sum(1 for m in personal_markers if m in text_lower)
-        has_relatable = any(m in text_lower for m in relatable_markers)
+        has_relatable = sum(1 for m in relatable_markers if m in text_lower)
+        has_vulnerability = any(m in text_lower for m in vulnerability_markers)
 
-        if has_personal >= 3 and has_relatable:
+        if has_personal >= 3 and has_relatable >= 2 and has_vulnerability:
+            script_strengths.append('Deep personal connection — vulnerable storytelling + audience relatability = maximum trust and engagement')
+        elif has_personal >= 3 and has_relatable >= 1:
             script_strengths.append('Personal and relatable — sharing your experience while connecting to the audience')
         elif has_personal >= 3:
             script_strengths.append('Personal storytelling — sharing your own experience builds authenticity')
-            if word_count > 40:
-                story_tips.append('MAKE IT RELATABLE: Connect your personal story to the viewer — add "you probably know the feeling" or "we\'ve all been there" to make them see themselves in your story')
+            story_tips.append('MAKE IT RELATABLE: You share personal experience but don\'t bridge to the viewer. Add "you probably know the feeling" or "if you\'ve ever..." to make them see themselves in your story')
+        elif has_relatable >= 2 and not has_personal:
+            story_tips.append('ADD YOUR PERSONAL STORY: You reference shared experiences but don\'t share yours. "I tried this..." or "When I first..." makes it 3x more engaging than generic advice')
         elif word_count > 40:
-            story_tips.append('GET PERSONAL: Share your own experience or perspective — first-person stories ("I tried this..." "I couldn\'t believe...") are 3x more engaging than generic content')
+            story_tips.append('GET PERSONAL: Your script feels generic. First-person stories ("I tried this...", "I couldn\'t believe...") build trust and are 3x more engaging. Share YOUR experience, not just information')
+
+        if not has_vulnerability and word_count > 50:
+            story_tips.append('ADD VULNERABILITY: Admitting mistakes, fears, or struggles ("I\'ll be honest, I messed up", "This scared me") builds deep trust and makes your content feel authentic in a world of polished fakeness')
 
         # 4. STAKES — does the viewer know why they should care?
         stakes_markers = ['because', 'matters', 'important', 'need to', 'have to', 'should',
                          'risk', 'danger', 'opportunity', 'miss out', 'don\'t want', 'could change',
                          'life-changing', 'cost', 'save', 'worth', 'valuable', 'urgent', 'before it\'s too late',
-                         'what\'s at stake', 'the truth', 'nobody tells you', 'here\'s why']
+                         'what\'s at stake', 'the truth', 'nobody tells you', 'here\'s why',
+                         'you need', 'must', 'critical', 'essential', 'can\'t afford', 'if you don\'t']
         has_stakes = sum(1 for m in stakes_markers if m in text_lower)
-        if has_stakes >= 3:
+        # Check if stakes are established early
+        has_early_stakes = sum(1 for m in stakes_markers if m in opening_text)
+        if has_stakes >= 4 and has_early_stakes >= 1:
+            script_strengths.append('Clear, early stakes — viewers immediately understand why this matters to them')
+        elif has_stakes >= 3:
             script_strengths.append('Clear stakes — viewers understand why this matters')
+            if has_early_stakes == 0:
+                story_tips.append('ESTABLISH STAKES EARLIER: Your "why it matters" comes late. Move it to the first 5 seconds — "If you\'re doing X, you need to hear this" or "This mistake is costing you..." hooks viewers by raising the stakes immediately')
         elif has_stakes < 2 and word_count > 40:
-            story_tips.append('RAISE THE STAKES: Tell viewers why they should care — what\'s at risk? What will they gain or lose? "This could save you..." or "Most people don\'t realize..."')
+            story_tips.append('RAISE THE STAKES: Your script never tells viewers WHY they should care. Add consequences: "This could save you...", "Most people lose X because...", "If you don\'t know this..." — stakes create urgency that prevents scrolling')
 
         # 5. SPECIFICITY — details make stories believable
-        import re
-        has_numbers = len(re.findall(r'\b\d+\b', text)) >= 2
-        has_names = len(re.findall(r'\b[A-Z][a-z]{2,}\b', text)) >= 2
-        has_details = has_numbers or has_names
-        if has_details:
-            script_strengths.append('Good use of specific details (numbers, names) — makes the story concrete and believable')
-        elif word_count > 50:
-            story_tips.append('ADD SPECIFIC DETAILS: Replace vague language with concrete details — exact numbers, names, places, and dates make your story 2x more credible and memorable')
+        number_matches = re.findall(r'\b\d+\b', text)
+        name_matches = re.findall(r'\b[A-Z][a-z]{2,}\b', text)
+        has_numbers = len(number_matches) >= 2
+        has_names = len(name_matches) >= 2
+        has_quotes = '"' in text or '\'' in text  # dialogue/quotes
+        has_sensory = any(s in text_lower for s in ['saw', 'heard', 'felt', 'smelled', 'tasted', 'looked', 'sounded', 'touched', 'cold', 'warm', 'bright', 'dark', 'loud', 'quiet'])
 
-        # 6. CLIFFHANGER / OPEN LOOP
+        specificity_count = sum([has_numbers, has_names, has_quotes, has_sensory])
+        if specificity_count >= 3:
+            script_strengths.append('Rich in specific details (numbers, names, sensory language) — creates vivid, believable, memorable content')
+        elif specificity_count >= 2:
+            script_strengths.append('Good use of specific details — makes the story concrete and credible')
+        elif specificity_count == 1:
+            story_tips.append('ADD MORE SPECIFICS: You have some detail but need more. Replace "a lot" with "47%", "someone" with a name, "it was bad" with "I felt my stomach drop". Specificity = credibility = trust')
+        elif word_count > 50:
+            story_tips.append('YOUR SCRIPT IS TOO VAGUE: Replace generic language with concrete details — exact numbers ("saved $2,340"), names, sensory descriptions ("my hands were shaking"). Specific stories are 2x more memorable and shareable')
+
+        # 6. CLIFFHANGER / OPEN LOOP (deeper analysis)
         loop_markers = ['but wait', 'here\'s the thing', 'what happened next', 'you won\'t believe',
                        'plot twist', 'little did', 'turns out', 'the crazy part', 'wait for it',
-                       'keep watching', 'stay with me', 'here\'s where it gets']
-        has_loop = any(m in text_lower for m in loop_markers)
-        if has_loop:
+                       'keep watching', 'stay with me', 'here\'s where it gets', 'and then',
+                       'guess what', 'but first', 'before i tell you', 'don\'t skip',
+                       'watch till the end', 'the best part', 'spoiler', 'i\'m about to',
+                       'this is where', 'that\'s when', 'but there\'s a catch', 'not what you think']
+        found_loops = [lm for lm in loop_markers if lm in text_lower]
+        if len(found_loops) >= 3:
+            script_strengths.append(f'Excellent open loop usage ({len(found_loops)} curiosity hooks) — viewers can\'t stop watching because each loop promises a payoff')
+        elif len(found_loops) >= 1:
             script_strengths.append('Uses open loops/cliffhangers — keeps viewers watching for the payoff')
+            if dur > 30:
+                story_tips.append(f'ADD MORE OPEN LOOPS: You have {len(found_loops)} but longer videos need multiple. Drop a "but here\'s where it gets interesting..." every 10-15 seconds to reset the viewer\'s curiosity clock')
         elif word_count > 30 and dur > 15:
-            story_tips.append('USE OPEN LOOPS: Tease what\'s coming — "but here\'s where it gets crazy" or "what happened next changed everything" keeps viewers from scrolling away')
+            story_tips.append('NO OPEN LOOPS: Your script never teases what\'s coming. Open loops ("but wait...", "here\'s where it gets crazy...") create curiosity gaps that the brain MUST close — this is the single most powerful retention technique')
 
-        # 7. ENDING STRENGTH
+        # 7. ENDING STRENGTH (deep analysis)
         if n_seg >= 2:
+            last_two = ' '.join(segments[-min(3, n_seg):]).lower().strip()
             last_seg = segments[-1].lower().strip() if segments[-1] else ''
+
             strong_endings = ['and that', 'so that', 'moral', 'lesson', 'point', 'remember',
                             'never forget', 'changed my', 'that\'s why', 'that\'s how',
                             'so if you', 'trust me', 'try it', 'do it', 'go for it',
-                            'worth it', 'game changer', 'life changer', 'the end']
-            weak_endings = ['yeah', 'so yeah', 'anyway', 'i don\'t know', 'whatever', 'i guess', 'so']
-            has_strong_end = any(e in last_seg for e in strong_endings)
+                            'worth it', 'game changer', 'life changer', 'the end',
+                            'and i\'m glad', 'best decision', 'no regrets', 'since then']
+            weak_endings = ['yeah', 'so yeah', 'anyway', 'i don\'t know', 'whatever', 'i guess', 'so',
+                          'but yeah', 'that\'s it', 'okay bye', 'alright', 'um']
+            callback_ending = False
+            if segments and len(segments) > 2:
+                first_seg = segments[0].lower()
+                # Check if ending references the opening (callback)
+                opening_keywords = set(first_seg.split()) - stopwords
+                closing_keywords = set(last_seg.split()) - stopwords
+                shared = opening_keywords & closing_keywords
+                if len(shared) >= 2:
+                    callback_ending = True
+
+            has_strong_end = any(e in last_two for e in strong_endings)
             has_weak_end = any(last_seg.endswith(e) or last_seg == e for e in weak_endings)
+            has_question_end = last_seg.endswith('?')
+
+            if callback_ending:
+                script_strengths.append('Callback ending — your closing references your opening, creating a satisfying loop that encourages rewatches')
+            if has_question_end:
+                script_strengths.append('Ends with a question — invites comments and boosts engagement signals')
             if has_strong_end:
-                script_strengths.append('Strong ending — closes with impact')
+                script_strengths.append('Strong ending — closes with impact and purpose')
             elif has_weak_end:
-                story_tips.append('STRONGER ENDING: Your video trails off — end with a punch. Restate the key message, deliver a surprise, or loop back to your opening hook for a satisfying close')
-            elif word_count > 30:
-                story_tips.append('END WITH IMPACT: Your closing should be memorable — circle back to your hook, deliver a punchline, or leave them with a thought that sticks')
+                story_tips.append('WEAK ENDING: Your video trails off ("' + last_seg[:30] + '..."). 3 proven endings: (1) Circle back to your hook, (2) Challenge the viewer ("Now go try this"), (3) Drop a cliffhanger for your next video ("Part 2 is going to blow your mind")')
+            elif word_count > 30 and not callback_ending and not has_question_end:
+                story_tips.append('FORGETTABLE ENDING: Your closing doesn\'t land. End with one of these: a callback to your opening hook, a thought-provoking question, a clear lesson, or a tease for future content. The ending determines if they follow you')
 
         # 8. CONVERSATIONAL TONE — talking TO the audience
-        audience_address = text_lower.count(' you ') + text_lower.count('you\'re') + text_lower.count('your ')
-        audience_ratio = audience_address / max(word_count / 100, 1)
-        if audience_ratio >= 3:
+        audience_you = text_lower.count(' you ') + text_lower.count('you\'re') + text_lower.count('your ') + text_lower.count('you\'ll') + text_lower.count('you\'ve')
+        audience_ratio = audience_you / max(word_count / 100, 1)
+        if audience_ratio >= 5:
+            script_strengths.append('Deeply conversational — speaks directly to the viewer throughout, creating a 1-on-1 feeling')
+        elif audience_ratio >= 3:
             script_strengths.append('Strong audience connection — speaks directly to the viewer')
-        elif audience_ratio < 1 and word_count > 40:
-            story_tips.append('TALK TO YOUR VIEWER: Use "you" and "your" more — speaking directly to the audience makes them feel included and increases retention by up to 40%')
+        elif audience_ratio >= 1:
+            story_tips.append('MORE DIRECT ADDRESS: Use "you" and "your" more often — the best creators talk TO the viewer, not AT them. "You need to try this" hits harder than "People should try this"')
+        elif word_count > 40:
+            story_tips.append('TALK TO YOUR VIEWER: Your script barely addresses the audience. Use "you" and "your" throughout — "You\'re probably making this mistake", "Here\'s what you need to know". Direct address increases retention by up to 40%')
+
+        # 9. CONTRAST / BEFORE-AFTER
+        contrast_markers = ['before', 'after', 'used to', 'now i', 'went from', 'compared to',
+                           'instead of', 'rather than', 'difference', 'vs', 'versus', 'old way',
+                           'new way', 'wrong way', 'right way', 'most people', 'what i do',
+                           'everyone thinks', 'but actually', 'common mistake']
+        contrast_count = sum(1 for cm in contrast_markers if cm in text_lower)
+        if contrast_count >= 3:
+            script_strengths.append('Strong contrast/comparison structure — before vs. after, wrong vs. right way — this format is proven to hold attention')
+        elif contrast_count >= 1:
+            pass  # mild, don't comment
+        elif word_count > 50:
+            story_tips.append('USE CONTRAST: "Before vs. After", "What most people do vs. What actually works" — contrast creates tension and makes your point instantly clear. It\'s one of the highest-performing content frameworks')
+
+        # 10. PROMISE & DELIVERY — does the opening promise what the video delivers?
+        promise_words = ['show you', 'tell you', 'teach you', 'give you', 'explain',
+                        'here are', 'here\'s', 'ways to', 'steps to', 'how to', 'reason',
+                        'things', 'tips', 'mistakes', 'secrets', 'rules', 'lessons']
+        has_promise = any(pw in opening_text for pw in promise_words)
+        if has_promise and has_resolution:
+            script_strengths.append('Clear promise and delivery — your opening sets expectations and your closing fulfills them. This builds trust and repeat viewers')
+        elif has_promise and not has_resolution:
+            story_tips.append('BROKEN PROMISE: Your opening promises something but you never clearly deliver on it. Unmet expectations cause viewers to feel cheated and not follow. Make sure your ending delivers what your hook promised')
+        elif not has_promise and word_count > 40:
+            story_tips.append('SET EXPECTATIONS: Tell viewers what they\'ll get in the first 3 seconds — "3 tips to...", "Here\'s how I...", "The reason you\'re..." — a clear promise gives them a reason to watch the entire video')
+
+        # ================================================================
+        # COMPUTE OVERALL SCORES
+        # ================================================================
+
+        # Story Score (0-100)
+        story_score = 0
+        story_score += min(30, arc_score * 0.3)  # narrative arc
+        story_score += min(20, emotional_score * 0.2)  # emotional journey
+        story_score += min(15, (has_personal + has_relatable * 2) * 5)  # personal/relatable
+        story_score += min(10, has_stakes * 3)  # stakes
+        story_score += min(10, specificity_count * 3)  # specificity
+        story_score += min(10, len(found_loops) * 4)  # open loops
+        story_score += min(5, 5 if (n_seg >= 2 and any(e in last_seg for e in ['that\'s why','that\'s how','try it','trust me','changed','worth'])) else 0)  # ending
+        story_score = min(100, int(story_score))
+        self.props['story_score'] = story_score
+
+        # Retention Score (0-100)
+        retention_score = 0
+        retention_score += min(25, hook_strength_text * 0.25)  # hook
+        retention_score += min(25, rehook_count * 8)  # re-hooks
+        retention_score += min(15, value_count * 3)  # value density
+        retention_score += min(10, 10 if has_end_tease else 0)  # end tease
+        retention_score += min(15, min(audience_ratio * 5, 15))  # audience address
+        retention_score += min(10, total_power * 2)  # power language
+        retention_score = min(100, int(retention_score))
+        self.props['retention_score'] = retention_score
 
         self.props['script_tips'] = script_tips
         self.props['story_tips'] = story_tips
+        self.props['retention_tips'] = retention_tips
         self.props['script_strengths'] = script_strengths
 
     def _score_all_platforms(self):
@@ -2139,6 +2519,35 @@ HTML_PAGE = r'''<!DOCTYPE html>
   body.glass .algo-improve li { border-left-color:#b87a00; background:rgba(184,122,0,0.06); }
   body.glass .algo-improve li::before { color:#b87a00; }
   .algo-no-tips { font-size:12px; color:var(--accent); padding:8px 0; }
+
+  /* Score Gauges Row */
+  .algo-score-gauges { display:flex; gap:20px; justify-content:center; flex-wrap:wrap; margin-bottom:18px;
+    padding:16px; background:var(--bg-panel); border:1px solid var(--border); border-radius:10px; }
+  .algo-gauge { text-align:center; min-width:80px; }
+  .algo-gauge .gauge-label { font-size:11px; font-weight:600; color:var(--text); text-transform:uppercase;
+    letter-spacing:1px; margin-top:6px; }
+  .algo-gauge .gauge-sublabel { font-size:10px; color:var(--text-dimmer); margin-top:2px; }
+
+  /* Emotional Journey Badge */
+  .algo-journey-badge { display:inline-block; padding:6px 14px; background:var(--accent-faint);
+    border:1px solid var(--border); border-radius:20px; font-size:12px; color:var(--text-dim);
+    margin-bottom:16px; letter-spacing:0.5px; }
+  .algo-journey-badge strong { color:var(--accent); }
+
+  /* Engagement Timeline */
+  .algo-timeline { display:flex; align-items:flex-end; gap:6px; height:120px; padding:12px 8px 0;
+    background:var(--accent-faint); border-radius:8px; margin-bottom:8px; position:relative; }
+  .timeline-bar-wrap { flex:1; display:flex; flex-direction:column; align-items:center;
+    justify-content:flex-end; height:100%; min-width:0; }
+  .timeline-bar { width:100%; min-height:5px; border-radius:4px 4px 0 0; transition:height 0.4s ease; }
+  .timeline-score { font-size:10px; font-weight:700; margin-top:4px; font-family:var(--font); }
+  .timeline-label { font-size:8px; color:var(--text-dimmer); white-space:nowrap; overflow:hidden;
+    text-overflow:ellipsis; max-width:100%; margin-top:2px; }
+
+  body.glass .algo-score-gauges { background:rgba(255,255,255,0.4); border-color:rgba(255,255,255,0.5); }
+  body.glass .algo-journey-badge { background:rgba(42,108,182,0.08); border-color:rgba(42,108,182,0.15); }
+  body.glass .algo-journey-badge strong { color:#2a6cb6; }
+  body.glass .algo-timeline { background:rgba(42,108,182,0.05); }
   body.glass .algo-card { background:rgba(255,255,255,0.35); border-color:rgba(255,255,255,0.5); }
   body.glass .algo-card:hover { border-color:#2a6cb6; box-shadow:0 0 15px rgba(42,108,182,0.15); }
   body.glass .algo-detail { background:rgba(255,255,255,0.35); border-color:rgba(255,255,255,0.5); }
@@ -2162,24 +2571,6 @@ HTML_PAGE = r'''<!DOCTYPE html>
   </svg>
   <div>
     <h1>SEARCH SCANNER</h1>
-    <p>UPLOAD / SEARCH / MATCH</p>
-  </div>
-  <div class="theme-selector" id="themeSelector">
-    <button class="theme-btn" onclick="toggleThemeMenu(event)" title="Switch Theme">
-      <span class="theme-dot"></span> <span id="themeLabel">MATRIX</span> <span class="arrow">&#9660;</span>
-    </button>
-    <div class="theme-menu" id="themeMenu">
-      <div class="theme-option active" data-theme="matrix" onclick="selectTheme('matrix')">
-        <span class="opt-dot" style="color:#00ff41;"></span>
-        <span class="opt-label">MATRIX</span>
-        <span class="opt-check">&#10003;</span>
-      </div>
-      <div class="theme-option" data-theme="glass" onclick="selectTheme('glass')">
-        <span class="opt-dot" style="color:#2a6cb6;"></span>
-        <span class="opt-label">GLASS</span>
-        <span class="opt-check">&#10003;</span>
-      </div>
-    </div>
   </div>
 </div>
 
@@ -2188,8 +2579,8 @@ HTML_PAGE = r'''<!DOCTYPE html>
     <button class="mode-tab active" onclick="switchMode('image')" id="tabImage"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><rect x="2" y="3" width="20" height="18" rx="2"/><circle cx="8.5" cy="10.5" r="2.5"/><path d="M21 15l-5-5L5 21"/></svg>Image</button>
     <button class="mode-tab" onclick="switchMode('audio')" id="tabAudio"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 010 7.07"/><path d="M19.07 4.93a10 10 0 010 14.14"/></svg>Audio</button>
     <button class="mode-tab" onclick="switchMode('text')" id="tabText"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>Text</button>
-    <button class="mode-tab" onclick="switchMode('transcribe')" id="tabTranscribe"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/><path d="M15 5l4 4"/></svg>Transcribe</button>
     <button class="mode-tab" onclick="switchMode('algorithm')" id="tabAlgorithm"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><path d="M12 20V10"/><path d="M18 20V4"/><path d="M6 20v-4"/></svg>Algorithm</button>
+    <button class="mode-tab" onclick="switchMode('transcribe')" id="tabTranscribe"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/><path d="M15 5l4 4"/></svg>Transcribe</button>
   </div>
 
   <div class="mode-panel active" id="panelImage">
@@ -4029,9 +4420,76 @@ function renderAlgorithmResults(data) {
   });
   html += '</div>';
 
-  // Script Analysis Section
-  if (p.transcript || (p.script_tips && p.script_tips.length > 0)) {
-    html += '<div style="font-size:11px;color:var(--text-dimmer);text-transform:uppercase;letter-spacing:2px;margin-bottom:8px">> Script Analysis</div>';
+  // Script Analysis Section (Deep)
+  var hasScriptData = p.transcript || (p.script_tips && p.script_tips.length > 0) || (p.story_tips && p.story_tips.length > 0);
+  if (hasScriptData) {
+    html += '<div style="font-size:11px;color:var(--text-dimmer);text-transform:uppercase;letter-spacing:2px;margin-bottom:8px">> Script & Story Analysis</div>';
+
+    // Story Score + Retention Score gauges
+    if (p.story_score !== undefined || p.retention_score !== undefined) {
+      html += '<div class="algo-score-gauges">';
+      if (p.story_score !== undefined) {
+        var sc1 = p.story_score || 0;
+        html += '<div class="algo-gauge">';
+        html += renderScoreRing(sc1, 70);
+        html += '<div class="gauge-label">Story</div>';
+        html += '<div class="gauge-sublabel">' + (sc1 >= 70 ? 'Strong' : sc1 >= 40 ? 'Developing' : 'Needs Work') + '</div>';
+        html += '</div>';
+      }
+      if (p.retention_score !== undefined) {
+        var sc2 = p.retention_score || 0;
+        html += '<div class="algo-gauge">';
+        html += renderScoreRing(sc2, 70);
+        html += '<div class="gauge-label">Retention</div>';
+        html += '<div class="gauge-sublabel">' + (sc2 >= 70 ? 'Strong' : sc2 >= 40 ? 'Moderate' : 'At Risk') + '</div>';
+        html += '</div>';
+      }
+      if (p.emotional_score !== undefined) {
+        var sc3 = p.emotional_score || 0;
+        html += '<div class="algo-gauge">';
+        html += renderScoreRing(sc3, 70);
+        html += '<div class="gauge-label">Emotion</div>';
+        html += '<div class="gauge-sublabel">' + (sc3 >= 70 ? 'Powerful' : sc3 >= 40 ? 'Present' : 'Flat') + '</div>';
+        html += '</div>';
+      }
+      if (p.hook_strength_text !== undefined) {
+        var sc4 = p.hook_strength_text || 0;
+        html += '<div class="algo-gauge">';
+        html += renderScoreRing(sc4, 70);
+        html += '<div class="gauge-label">Hook</div>';
+        html += '<div class="gauge-sublabel">' + (sc4 >= 70 ? 'Gripping' : sc4 >= 40 ? 'Decent' : 'Weak') + '</div>';
+        html += '</div>';
+      }
+      html += '</div>';
+    }
+
+    // Emotional Journey badge
+    if (p.emotional_journey) {
+      html += '<div class="algo-journey-badge">Emotional Arc: <strong>' + p.emotional_journey + '</strong></div>';
+    }
+
+    // Engagement Timeline
+    if (p.engagement_timeline && p.engagement_timeline.length > 0) {
+      html += '<div class="algo-detail" style="margin-bottom:16px">';
+      html += '<div class="algo-detail-header"><span class="detail-icon">&#128200;</span><span class="detail-name">Engagement Timeline</span>';
+      html += '<span style="font-size:10px;color:var(--text-dimmer)">Predicted viewer engagement across your video</span></div>';
+      html += '<div class="algo-timeline">';
+      var maxSeg = Math.max.apply(null, p.engagement_timeline.map(function(t){return t.score;})) || 1;
+      p.engagement_timeline.forEach(function(seg) {
+        var pct = Math.max(5, (seg.score / 100) * 100);
+        var col = algoScoreColor(seg.score);
+        var timeLabel = Math.floor(seg.time_start) + 's-' + Math.floor(seg.time_end) + 's';
+        html += '<div class="timeline-bar-wrap" title="' + timeLabel + ': ' + seg.score + '/100">';
+        html += '<div class="timeline-bar" style="height:' + pct + '%;background:' + col + '"></div>';
+        html += '<div class="timeline-score" style="color:' + col + '">' + seg.score + '</div>';
+        html += '<div class="timeline-label">' + timeLabel + '</div>';
+        html += '</div>';
+      });
+      html += '</div>';
+      html += '</div>';
+    }
+
+    // Transcript
     html += '<div class="algo-detail" style="margin-bottom:20px">';
     if (p.transcript && p.transcript.length > 0) {
       html += '<div class="algo-detail-header">';
@@ -4043,26 +4501,41 @@ function renderAlgorithmResults(data) {
       html += p.transcript;
       html += '</div>';
     }
+
+    // Script Strengths
     if (p.script_strengths && p.script_strengths.length > 0) {
-      html += '<div style="font-size:10px;color:var(--text-dimmer);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px">&#10003; Script Strengths</div>';
+      html += '<div style="font-size:10px;color:var(--text-dimmer);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px">&#10003; What\'s Working</div>';
       html += '<ul class="algo-tips algo-strengths">';
       p.script_strengths.forEach(function(tip) { html += '<li>' + tip + '</li>'; });
       html += '</ul>';
     }
+
+    // Delivery & Engagement Tips
     if (p.script_tips && p.script_tips.length > 0) {
-      html += '<div style="font-size:10px;color:var(--text-dimmer);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px;margin-top:10px">&#9997; Delivery & Engagement Tips</div>';
+      html += '<div style="font-size:10px;color:var(--text-dimmer);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px;margin-top:12px">&#9997; Delivery & Engagement</div>';
       html += '<ul class="algo-tips algo-improve">';
       p.script_tips.forEach(function(tip) { html += '<li>' + tip + '</li>'; });
       html += '</ul>';
     }
+
+    // Story & Narrative Tips
     if (p.story_tips && p.story_tips.length > 0) {
-      html += '<div style="font-size:10px;color:var(--text-dimmer);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px;margin-top:10px">&#128214; Story & Narrative Tips</div>';
+      html += '<div style="font-size:10px;color:var(--text-dimmer);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px;margin-top:12px">&#128214; Story & Narrative</div>';
       html += '<ul class="algo-tips algo-improve">';
       p.story_tips.forEach(function(tip) { html += '<li>' + tip + '</li>'; });
       html += '</ul>';
     }
-    if ((!p.script_tips || !p.script_tips.length) && (!p.story_tips || !p.story_tips.length) && p.has_speech) {
-      html += '<div class="algo-no-tips">> Script looks great — no major improvements needed!</div>';
+
+    // Retention Tips
+    if (p.retention_tips && p.retention_tips.length > 0) {
+      html += '<div style="font-size:10px;color:var(--text-dimmer);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px;margin-top:12px">&#128337; Retention & Watch Time</div>';
+      html += '<ul class="algo-tips algo-improve">';
+      p.retention_tips.forEach(function(tip) { html += '<li>' + tip + '</li>'; });
+      html += '</ul>';
+    }
+
+    if ((!p.script_tips || !p.script_tips.length) && (!p.story_tips || !p.story_tips.length) && (!p.retention_tips || !p.retention_tips.length) && p.has_speech) {
+      html += '<div class="algo-no-tips">> Script is excellent — no major improvements needed!</div>';
     }
     html += '</div>';
   }
@@ -4287,23 +4760,6 @@ LOGIN_PAGE = r'''<!DOCTYPE html>
 </head>
 <body>
 <canvas id="matrixCanvas"></canvas>
-<div class="theme-selector-login" id="themeSelector">
-  <button class="theme-btn" onclick="toggleThemeMenu(event)" title="Switch Theme">
-    <span class="theme-dot"></span> <span id="themeLabel">MATRIX</span> <span class="arrow">&#9660;</span>
-  </button>
-  <div class="theme-menu" id="themeMenu">
-    <div class="theme-option active" data-theme="matrix" onclick="selectTheme('matrix')">
-      <span class="opt-dot" style="color:#00ff41;"></span>
-      <span class="opt-label">MATRIX</span>
-      <span class="opt-check">&#10003;</span>
-    </div>
-    <div class="theme-option" data-theme="glass" onclick="selectTheme('glass')">
-      <span class="opt-dot" style="color:#2a6cb6;"></span>
-      <span class="opt-label">GLASS</span>
-      <span class="opt-check">&#10003;</span>
-    </div>
-  </div>
-</div>
 <div class="login-wrap">
 <div class="login-box">
   <svg class="logo-svg" id="loginLogoSvg" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
