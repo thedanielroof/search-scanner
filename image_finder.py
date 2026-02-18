@@ -4020,7 +4020,6 @@ function renderAlgorithmResults(data) {
     ['Audio', p.has_audio ? 'Yes (loudness: ' + (p.audio_loudness||0) + ')' : 'No audio'],
     ['Scene Changes', (p.scene_changes||0) + ' (' + (p.scene_change_rate||0) + '/min)'],
     ['Faces Detected', p.face_detected ? 'Yes (' + Math.round((p.face_frequency||0)*100) + '% of frames)' : 'No'],
-    ['Text Overlays', p.has_text_overlay ? 'Yes' : 'No'],
     ['Hook Strength', (p.hook_strength||0) + '/100'],
     ['Brightness', Math.round(p.avg_brightness||0) + '/255'],
     ['Speech', p.has_speech ? 'Yes (' + (p.word_count||0) + ' words, ' + (p.words_per_min||0) + ' wpm)' : (p.has_audio ? 'No speech detected' : 'No audio')],
