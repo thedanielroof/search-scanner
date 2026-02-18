@@ -2460,7 +2460,9 @@ HTML_PAGE = r'''<!DOCTYPE html>
   body.glass .theme-option.active .opt-dot { box-shadow:0 0 6px rgba(42,108,182,0.4); }
 
   /* ==================== Algorithm Tab Styles ==================== */
-  .algo-props { display:grid; grid-template-columns:repeat(auto-fill, minmax(180px,1fr)); gap:8px; margin-bottom:20px; }
+  .algo-props { display:grid; grid-template-columns:repeat(5, 1fr); gap:8px; margin-bottom:20px; }
+  @media (max-width: 900px) { .algo-props { grid-template-columns:repeat(3, 1fr); } }
+  @media (max-width: 550px) { .algo-props { grid-template-columns:repeat(2, 1fr); } }
   .algo-prop { background:var(--bg-panel); border:1px solid var(--border); border-radius:6px; padding:10px 14px;
     font-size:11px; display:flex; justify-content:space-between; align-items:center; }
   .algo-prop .prop-label { color:var(--text-dimmer); text-transform:uppercase; letter-spacing:1px; font-size:10px; }
@@ -4412,7 +4414,6 @@ function renderAlgorithmResults(data) {
     ['Scene Changes', (p.scene_changes||0) + ' (' + (p.scene_change_rate||0) + '/min)'],
     ['Faces Detected', p.face_detected ? 'Yes (' + Math.round((p.face_frequency||0)*100) + '% of frames)' : 'No'],
     ['Hook Strength', (p.hook_strength||0) + '/100'],
-    ['Brightness', Math.round(p.avg_brightness||0) + '/255'],
     ['Speech', p.has_speech ? 'Yes (' + (p.word_count||0) + ' words, ' + (p.words_per_min||0) + ' wpm)' : (p.has_audio ? 'No speech detected' : 'No audio')],
   ];
   props.forEach(function(pr) {
